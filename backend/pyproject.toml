@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "govform-autofiller"
 version = "0.1.0"
@@ -20,13 +24,17 @@ dependencies = [
     "pillow",
     "pypdf",
     "python-jose[cryptography]",  # JWT
-    "passlib[bcrypt]",            # password hashing
+    "bcrypt",                     # password hashing (used directly; passlib is unmaintained)
     "cryptography",               # field-level PII encryption
     "python-multipart",           # file uploads
+    "email-validator",            # pydantic EmailStr
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.ruff]
 line-length = 100

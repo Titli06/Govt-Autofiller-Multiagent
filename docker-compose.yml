@@ -1,4 +1,5 @@
-# Local dev stack. Prod swaps MinIO for AWS S3 (same S3 API, no code change).
+# Local dev stack. Prod swaps MinIO for AWS S3 and Mailpit for a real SMTP provider
+# (same APIs, no code change).
 services:
   postgres:
     image: postgres:16
@@ -10,11 +11,21 @@ services:
       - postgres-data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U govfill"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   minio:
     image: minio/minio
@@ -28,15 +39,41 @@ services:
       - "9000:9000"
       - "9001:9001"
 
+  # Dev mail sink: catches all outbound email; web UI at http://localhost:8025.
+  mailpit:
+    image: axllent/mailpit
+    ports:
+      - "1025:1025"  # SMTP
+      - "8025:8025"  # web UI
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "true"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "true"
+
   api:
     build: ./backend
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # entrypoint.sh applies migrations, then starts uvicorn. Run via `sh` so we don't
+    # depend on the exec bit surviving the Windows bind mount.
+    command: ["sh", "entrypoint.sh"]
     env_file: .env
     volumes:
       - ./backend:/app
     ports:
       - "8000:8000"
-    depends_on: [postgres, redis, minio]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
 
   worker:
     build: ./backend
@@ -44,17 +81,28 @@ services:
     env_file: .env
     volumes:
       - ./backend:/app
-    depends_on: [postgres, redis, minio]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
 
   frontend:
     build: ./frontend
     command: npm run dev -- --host 0.0.0.0
+    environment:
+      # Vite proxies /api -> the api service inside the compose network.
+      VITE_API_PROXY_TARGET: http://api:8000
     volumes:
       - ./frontend:/app
       - /app/node_modules
     ports:
       - "5173:5173"
-    depends_on: [api]
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   postgres-data:

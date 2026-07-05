@@ -12,6 +12,7 @@ venv/
 node_modules/
 frontend/dist/
 *.local
+*.tsbuildinfo
 
 # Env & secrets
 .env
