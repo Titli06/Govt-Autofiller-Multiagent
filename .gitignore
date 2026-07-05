@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+*.local
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Data / uploads (never commit PII or raw documents)
+uploads/
+data/
+minio-data/
+postgres-data/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

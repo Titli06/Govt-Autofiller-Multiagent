@@ -1,0 +1,3 @@
+"""Declarative Base + model imports so Alembic autogenerate sees every table."""
+
+# TODO: from sqlalchemy.orm import DeclarativeBase; class Base(DeclarativeBase): ...

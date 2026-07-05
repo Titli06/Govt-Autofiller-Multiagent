@@ -1,0 +1,35 @@
+[project]
+name = "govform-autofiller"
+version = "0.1.0"
+description = "Autonomous government form auto-filler agent (backend)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "sqlalchemy",
+    "psycopg[binary]",
+    "alembic",
+    "celery[redis]",
+    "redis",
+    "boto3",              # S3 / MinIO
+    "langgraph",
+    "anthropic",          # vision-LLM (primary OCR/extraction)
+    "pytesseract",        # fallback OCR for clean typed docs
+    "pillow",
+    "pypdf",
+    "python-jose[cryptography]",  # JWT
+    "passlib[bcrypt]",            # password hashing
+    "cryptography",               # field-level PII encryption
+    "python-multipart",           # file uploads
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

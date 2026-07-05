@@ -1,0 +1,12 @@
+{
+  "form_type": "income_certificate",
+  "display_name": "Income Certificate",
+  "required_fields": [
+    { "name": "applicant_name", "profile_key": "full_name", "high_stakes": false },
+    { "name": "father_name", "profile_key": "father_name", "high_stakes": false },
+    { "name": "date_of_birth", "profile_key": "dob", "high_stakes": true },
+    { "name": "address", "profile_key": "address", "high_stakes": false },
+    { "name": "annual_income", "profile_key": null, "high_stakes": true },
+    { "name": "aadhaar_number", "profile_key": "aadhaar_number", "high_stakes": true }
+  ]
+}
