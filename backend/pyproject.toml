@@ -19,9 +19,10 @@ dependencies = [
     "redis",
     "boto3",              # S3 / MinIO
     "langgraph",
-    "anthropic",          # vision-LLM (primary OCR/extraction)
+    "google-genai",       # vision-LLM (primary OCR/extraction, Gemini)
     "pytesseract",        # fallback OCR for clean typed docs
     "pillow",
+    "pillow-heif",        # HEIC/HEIF (mobile camera) -> JPEG conversion
     "pypdf",
     "python-jose[cryptography]",  # JWT
     "bcrypt",                     # password hashing (used directly; passlib is unmaintained)
@@ -31,7 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy"]
+dev = ["pytest", "pytest-asyncio", "httpx", "ruff", "mypy", "moto[s3]"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
@@ -41,3 +42,7 @@ line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[[tool.mypy.overrides]]
+module = ["celery.*", "boto3.*", "botocore.*", "pillow_heif.*"]
+ignore_missing_imports = true

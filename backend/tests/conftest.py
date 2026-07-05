@@ -6,6 +6,7 @@ the migration is exercised separately against Postgres in CI/compose.
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Iterator
 
 import pytest
@@ -13,6 +14,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def _test_pii_key(monkeypatch) -> None:
+    """Give every test a valid 32-byte base64 PII_ENCRYPTION_KEY by default (Phase 1).
+    Tests exercising bad-key handling (test_encryption.py) override this further."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "pii_encryption_key", base64.b64encode(b"0" * 32).decode())
 
 
 @pytest.fixture()
@@ -57,7 +67,7 @@ def sent_emails(monkeypatch) -> list[dict]:
 
 
 @pytest.fixture()
-def client(db_engine, sent_emails) -> Iterator[TestClient]:
+def client(db_engine, sent_emails, monkeypatch) -> Iterator[TestClient]:
     from app.api.deps import get_db
     from app.main import app
 
@@ -71,6 +81,9 @@ def client(db_engine, sent_emails) -> Iterator[TestClient]:
             session.close()
 
     app.dependency_overrides[get_db] = _override_get_db
+    # Don't hit real S3/MinIO on every test's app startup (Phase 1) — tests that actually
+    # exercise storage patch app.api.routes.documents.put_document/get_document directly.
+    monkeypatch.setattr("app.main.ensure_bucket", lambda: None)
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

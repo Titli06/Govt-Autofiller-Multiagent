@@ -2,17 +2,33 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import auth, documents, forms, history, profile
 from app.config import settings
-from app.core.logging import configure_logging
+from app.core.logging import configure_logging, logger
+from app.services.storage import ensure_bucket
 
 configure_logging()
 
-app = FastAPI(title="GovForm Auto-Filler", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Dev/MinIO convenience only (SPEC-PHASE1.md §6.2) — in prod the bucket already
+    # exists, and if S3 is unreachable at boot we log and continue rather than crash the
+    # app; the first real upload will surface the problem loudly instead.
+    try:
+        ensure_bucket()
+    except Exception:
+        logger.warning("ensure_bucket failed at startup; continuing")
+    yield
+
+
+app = FastAPI(title="GovForm Auto-Filler", version="0.1.0", lifespan=_lifespan)
 
 # Dev talks to the API same-origin via the Vite proxy, so cors_origins is empty and this
 # middleware is a no-op. Prod (cross-origin split) sets cors_origins and needs credentials.

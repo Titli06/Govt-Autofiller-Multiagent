@@ -6,6 +6,7 @@ import { Link, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./auth/AuthContext";
 import History from "./pages/History";
 import Login from "./pages/Login";
+import Profile from "./pages/Profile";
 import Register from "./pages/Register";
 import Review from "./pages/Review";
 import Upload from "./pages/Upload";
@@ -27,6 +28,7 @@ function AppShell({ children }: { children: JSX.Element }) {
         <strong>GovFill</strong>
         <Link to="/">Dashboard</Link>
         <Link to="/upload">Upload</Link>
+        <Link to="/profile">Profile</Link>
         <Link to="/review">Review</Link>
         <Link to="/history">History</Link>
         <span className="spacer" />
@@ -71,6 +73,16 @@ export default function App() {
           <ProtectedRoute>
             <AppShell>
               <Upload />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/profile"
+        element={
+          <ProtectedRoute>
+            <AppShell>
+              <Profile />
             </AppShell>
           </ProtectedRoute>
         }

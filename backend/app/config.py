@@ -21,8 +21,26 @@ class Settings(BaseSettings):
     refresh_cookie_samesite: str = "lax"
     refresh_cookie_path: str = "/api/auth"  # cookie only sent to auth endpoints
 
-    # PII field-level encryption — unused until Phase 1.
+    # PII field-level encryption (Phase 1). Must be base64 of exactly 32 bytes (AES-256).
     pii_encryption_key: str = "change-me"
+
+    # Uploads (Phase 1)
+    max_upload_bytes: int = 10_485_760  # 10 MiB
+    allowed_upload_content_types: list[str] = [
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+        "image/heic",
+        "image/heif",
+        "application/pdf",
+    ]
+    max_upload_pages: int = 10
+
+    # OCR / extraction worker (Phase 1)
+    ocr_max_retries: int = 3
+    ocr_retry_backoff_seconds: int = 5
+    ocr_confidence_high: float = 0.90
+    ocr_confidence_medium: float = 0.70
 
     # Infra
     database_url: str = "postgresql+psycopg://govfill:govfill@localhost:5432/govfill"
@@ -48,9 +66,9 @@ class Settings(BaseSettings):
     s3_bucket: str = "govfill-documents"
     s3_region: str = "us-east-1"
 
-    # Vision-LLM — unused until Phase 1.
-    anthropic_api_key: str = ""
-    vision_model: str = "claude-opus-4-8"
+    # Vision-LLM (Google Gemini) — used by services/ocr/vision_llm.py.
+    gemini_api_key: str = ""
+    vision_model: str = "gemini-2.5-flash"
 
     # Confidence policy — fields below this route to mandatory human review.
     confidence_threshold: float = 0.90

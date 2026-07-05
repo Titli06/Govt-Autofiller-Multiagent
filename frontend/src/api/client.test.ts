@@ -64,3 +64,115 @@ describe("api client", () => {
     });
   });
 });
+
+describe("Phase 1: documents + profile", () => {
+  it("uploadDocument sends multipart form data without a JSON content-type", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { document_id: "doc-1", ocr_status: "pending" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const file = new File(["fake-bytes"], "aadhaar.jpg", { type: "image/jpeg" });
+    const result = await api.uploadDocument(file, "aadhaar");
+
+    expect(result).toEqual({ document_id: "doc-1", ocr_status: "pending" });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/documents/upload");
+    expect(init.body).toBeInstanceOf(FormData);
+    const headers = new Headers(init.headers);
+    expect(headers.has("Content-Type")).toBe(false); // browser sets the multipart boundary
+    const body = init.body as FormData;
+    expect(body.get("doc_type")).toBe("aadhaar");
+    expect(body.get("file")).toBe(file);
+  });
+
+  it("getDocumentStatus requests the status endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "doc-1",
+        declared_doc_type: "aadhaar",
+        detected_doc_type: "aadhaar",
+        ocr_status: "extracted",
+        ocr_error: null,
+        page_count: 1,
+        created_at: "2026-01-01T00:00:00Z",
+        extracted_at: "2026-01-01T00:00:05Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.getDocumentStatus("doc-1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/documents/doc-1/status");
+    expect(result.ocr_status).toBe("extracted");
+  });
+
+  it("getDocumentFile returns a blob and throws ApiError on failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("bytes", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const blob = await api.getDocumentFile("doc-1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/documents/doc-1/file");
+    expect(blob).toBeInstanceOf(Blob);
+
+    const failMock = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+    vi.stubGlobal("fetch", failMock);
+    await expect(api.getDocumentFile("missing")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("getProfile fetches the field list", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { fields: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.getProfile();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/profile");
+    expect(result).toEqual({ fields: [] });
+  });
+
+  it("confirmField posts to the confirm endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "field-1",
+        field_name: "full_name",
+        display_value: "Rajesh Kumar",
+        confidence: 0.9,
+        confidence_band: "high",
+        high_stakes: false,
+        status: "user_confirmed",
+        source: { document_id: "doc-1", doc_type: "aadhaar" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.confirmField("field-1");
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/profile/fields/field-1/confirm");
+    expect(init.method).toBe("POST");
+    expect(result.status).toBe("user_confirmed");
+  });
+
+  it("correctField posts the corrected value as JSON", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "field-1",
+        field_name: "aadhaar_number",
+        display_value: "XXXX XXXX 2346",
+        confidence: 1.0,
+        confidence_band: "high",
+        high_stakes: true,
+        status: "user_corrected",
+        source: { document_id: "doc-1", doc_type: "aadhaar" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.correctField("field-1", "234123412346");
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/profile/fields/field-1/correct");
+    expect(JSON.parse(init.body as string)).toEqual({ value: "234123412346" });
+    expect(result.status).toBe("user_corrected");
+  });
+});

@@ -101,3 +101,98 @@ button.link {
 .app-main {
   padding: 32px 24px;
 }
+
+.confidence-field {
+  background: #fff;
+  border: 1px solid #e6e8eb;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  max-width: 480px;
+}
+
+.confidence-field-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  text-transform: capitalize;
+  margin-bottom: 6px;
+}
+
+.badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  background: #fdf1dd;
+  color: #a15c00;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.band-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-left: auto;
+}
+
+.band-green {
+  background: #0a7d3d;
+}
+
+.band-yellow {
+  background: #d69e00;
+}
+
+.band-red {
+  background: #b42318;
+}
+
+.confidence-field-value {
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+
+.confidence-field-edit {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.confidence-field-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: #666;
+  text-transform: capitalize;
+  align-items: center;
+}
+
+.confidence-field-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.profile-field-group {
+  margin-bottom: 4px;
+}
+
+.source-preview {
+  margin-top: 20px;
+}
+
+.source-preview img {
+  max-width: 480px;
+  max-height: 480px;
+  display: block;
+  border: 1px solid #e6e8eb;
+  border-radius: 8px;
+}
+
+.upload-status {
+  margin-top: 20px;
+}

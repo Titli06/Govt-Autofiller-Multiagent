@@ -5,7 +5,15 @@
 // httpOnly cookie the browser sends automatically (credentials: "include"). On a 401 we
 // attempt one silent /refresh and retry; if that fails, onAuthLost() notifies the app.
 
-import type { TokenResponse, User } from "../types";
+import type {
+  DocType,
+  DocumentStatus,
+  DocumentUploadResponse,
+  ProfileField,
+  ProfileOut,
+  TokenResponse,
+  User,
+} from "../types";
 
 const BASE = "/api";
 
@@ -48,7 +56,8 @@ function parseError(status: number, data: unknown): ApiError {
 async function rawRequest(path: string, options: RequestInit): Promise<Response> {
   const headers = new Headers(options.headers);
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
-  if (options.body && !headers.has("Content-Type")) {
+  // FormData sets its own multipart boundary — never override it with JSON.
+  if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   return fetch(BASE + path, { ...options, headers, credentials: "include" });
@@ -126,4 +135,33 @@ export const api = {
   },
 
   me: () => request<User>("/auth/me"),
+
+  uploadDocument: (file: File, docType: DocType): Promise<DocumentUploadResponse> => {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("doc_type", docType);
+    return request<DocumentUploadResponse>("/documents/upload", { method: "POST", body });
+  },
+
+  getDocumentStatus: (documentId: string) =>
+    request<DocumentStatus>(`/documents/${documentId}/status`),
+
+  // Fetched (not a plain <img src>) because the file endpoint is Bearer-authenticated,
+  // not cookie-authenticated — callers turn the blob into an object URL for display.
+  getDocumentFile: async (documentId: string): Promise<Blob> => {
+    const res = await rawRequest(`/documents/${documentId}/file`, { method: "GET" });
+    if (!res.ok) throw new ApiError(res.status, "Failed to load source document");
+    return res.blob();
+  },
+
+  getProfile: () => request<ProfileOut>("/profile"),
+
+  confirmField: (fieldId: string) =>
+    request<ProfileField>(`/profile/fields/${fieldId}/confirm`, { method: "POST" }),
+
+  correctField: (fieldId: string, value: string) =>
+    request<ProfileField>(`/profile/fields/${fieldId}/correct`, {
+      method: "POST",
+      body: JSON.stringify({ value }),
+    }),
 };

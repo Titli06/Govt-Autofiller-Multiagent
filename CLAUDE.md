@@ -30,7 +30,7 @@ backend/              FastAPI + Celery + LangGraph service (Python 3.11)
 frontend/             React + TypeScript (Vite)
   src/                pages/ (Upload, Review, History), components/ (ConfidenceField), api/client.ts, types/
 docker-compose.yml    local stack: postgres, redis, minio, api, worker, frontend
-.env.example          copy to .env; holds secrets, DB/Redis/S3 URLs, ANTHROPIC_API_KEY
+.env.example          copy to .env; holds secrets, DB/Redis/S3 URLs, GEMINI_API_KEY
 ```
 
 ## Commands
@@ -38,7 +38,7 @@ docker-compose.yml    local stack: postgres, redis, minio, api, worker, frontend
 The whole stack runs via Docker Compose; the backend and frontend can also run standalone.
 
 ```bash
-cp .env.example .env          # then fill in ANTHROPIC_API_KEY and the secrets
+cp .env.example .env          # then fill in GEMINI_API_KEY and the secrets
 docker compose up             # postgres, redis, minio, api (:8000), worker, frontend (:5173)
 ```
 
@@ -78,7 +78,7 @@ A citizen uploads identity documents once (Aadhaar, PAN, marksheets, address pro
 
 - **Backend:** FastAPI (Python) — keeps ML/LLM and API layers in one language.
 - **Agent orchestration:** LangGraph — the auto-fill / flag-for-review / re-verify branching maps to a state graph.
-- **OCR/vision:** Vision-LLM (Claude / GPT-4V) as primary; Tesseract only as a cheap first-pass fallback for clearly clean, typed documents.
+- **OCR/vision:** Vision-LLM as primary; Tesseract only as a cheap first-pass fallback for clearly clean, typed documents. PRD §5.1 named Claude/GPT-4V; **swapped to Google Gemini** during Phase 1 build (explicit later decision — see `services/ocr/vision_llm.py` docstring and memory/phase1-decisions.md). The module's interface (`extract()`, `RawExtraction`, `VisionExtractionError`) is provider-agnostic, so this can swap again without touching `extraction.py` or `workers/tasks.py`.
 - **Structured extraction:** LLM-based JSON-schema extraction with strict schema constraints (regex/rule-based parsing was explicitly rejected — it defeats the core value prop). Must always be paired with confidence scoring + verification.
 - **Async jobs:** Celery + Redis — OCR/LLM calls are slow, retryable, queueable work; jobs must not silently drop.
 - **Database:** PostgreSQL (field-level encryption + JSONB for per-form-type schemas).
