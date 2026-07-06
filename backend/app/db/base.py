@@ -12,6 +12,7 @@ from app.db.base_class import Base  # noqa: F401
 # Keep this list in sync as models are added.
 from app.models.document import Document  # noqa: E402,F401
 from app.models.email_verification_token import EmailVerificationToken  # noqa: E402,F401
+from app.models.form import Form, FormField  # noqa: E402,F401
 from app.models.profile import Profile, ProfileField  # noqa: E402,F401
 from app.models.refresh_token import RefreshToken  # noqa: E402,F401
 from app.models.user import User  # noqa: E402,F401

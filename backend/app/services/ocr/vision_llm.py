@@ -123,21 +123,18 @@ def _build_contents(images: list[bytes], declared_doc_type: str) -> list:
     return parts
 
 
-def extract(images: list[bytes], declared_doc_type: str) -> RawExtraction:
-    field_names = DOC_TYPE_SCHEMAS.get(declared_doc_type)
-    if field_names is None:
-        raise VisionExtractionError(
-            f"unknown declared_doc_type: {declared_doc_type}", transient=False
-        )
-
+def _generate_json(contents: list, schema: dict) -> dict:
+    """Shared call+parse path for both document extraction and form classification —
+    same model, same structured-output contract, same retryable-vs-terminal error
+    classification (SPEC-PHASE1.md §6.3)."""
     client = _client()
     try:
         response = client.models.generate_content(
             model=settings.vision_model,
-            contents=_build_contents(images, declared_doc_type),
+            contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_json_schema=_response_schema(field_names),
+                response_json_schema=schema,
             ),
         )
     except errors.ServerError as exc:
@@ -157,10 +154,21 @@ def extract(images: list[bytes], declared_doc_type: str) -> RawExtraction:
     if not text:
         raise VisionExtractionError("model returned an empty response", transient=False)
     try:
-        payload = json.loads(text)
+        return json.loads(text)
     except json.JSONDecodeError as exc:
         raise VisionExtractionError(f"model returned invalid JSON: {exc}", transient=False) from exc
 
+
+def extract(images: list[bytes], declared_doc_type: str) -> RawExtraction:
+    field_names = DOC_TYPE_SCHEMAS.get(declared_doc_type)
+    if field_names is None:
+        raise VisionExtractionError(
+            f"unknown declared_doc_type: {declared_doc_type}", transient=False
+        )
+
+    payload = _generate_json(
+        _build_contents(images, declared_doc_type), _response_schema(field_names)
+    )
     fields = {
         name: RawField(
             value=raw.get("value"),
@@ -171,3 +179,25 @@ def extract(images: list[bytes], declared_doc_type: str) -> RawExtraction:
         for name, raw in (payload.get("fields") or {}).items()
     }
     return RawExtraction(detected_doc_type=payload.get("detected_doc_type"), fields=fields)
+
+
+def classify_form(images: list[bytes], known_form_types: list[str]) -> str:
+    """Classifies a blank government form into one of `known_form_types`, or
+    "unknown" when the model isn't confident it matches any of them (Phase 2's
+    form_schema_tool only blocks a fill on a *confident* mismatch — see
+    SPEC-PHASE2.md Decision 1 — so the model is explicitly told to prefer "unknown"
+    over guessing)."""
+    schema = {
+        "type": "object",
+        "properties": {"form_type": {"type": "string", "enum": [*known_form_types, "unknown"]}},
+        "required": ["form_type"],
+    }
+    contents: list = [types.Part.from_bytes(data=img, mime_type=_MEDIA_TYPE) for img in images]
+    contents.append(
+        "This is a blank, unfilled government form. Classify it as exactly one of these "
+        f"known form types if it clearly and confidently matches: {known_form_types}. If "
+        "you are not confident it matches any of them, answer 'unknown' rather than "
+        "guessing."
+    )
+    payload = _generate_json(contents, schema)
+    return payload.get("form_type") or "unknown"

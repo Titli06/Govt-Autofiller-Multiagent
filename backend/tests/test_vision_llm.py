@@ -147,3 +147,42 @@ def test_transport_error_is_transient():
         with pytest.raises(vision_llm.VisionExtractionError) as exc_info:
             vision_llm.extract([b"img"], "aadhaar")
     assert exc_info.value.transient is True
+
+
+# --- classify_form (Phase 2) ---------------------------------------------------------
+
+
+def test_classify_form_returns_known_type():
+    payload = {"form_type": "income_certificate"}
+    with patch.object(vision_llm, "_client", return_value=_fake_client(_returns(payload))):
+        result = vision_llm.classify_form([b"img"], ["income_certificate", "scholarship_application"])
+    assert result == "income_certificate"
+
+
+def test_classify_form_returns_unknown_when_model_unsure():
+    payload = {"form_type": "unknown"}
+    with patch.object(vision_llm, "_client", return_value=_fake_client(_returns(payload))):
+        result = vision_llm.classify_form([b"img"], ["income_certificate"])
+    assert result == "unknown"
+
+
+def test_classify_form_missing_field_defaults_to_unknown():
+    with patch.object(vision_llm, "_client", return_value=_fake_client(_returns({}))):
+        result = vision_llm.classify_form([b"img"], ["income_certificate"])
+    assert result == "unknown"
+
+
+def test_classify_form_server_error_is_transient():
+    client = _fake_client(_raises(_api_error(errors.ServerError, 500)))
+    with patch.object(vision_llm, "_client", return_value=client):
+        with pytest.raises(vision_llm.VisionExtractionError) as exc_info:
+            vision_llm.classify_form([b"img"], ["income_certificate"])
+    assert exc_info.value.transient is True
+
+
+def test_classify_form_bad_request_is_terminal():
+    client = _fake_client(_raises(_api_error(errors.ClientError, 400)))
+    with patch.object(vision_llm, "_client", return_value=client):
+        with pytest.raises(vision_llm.VisionExtractionError) as exc_info:
+            vision_llm.classify_form([b"img"], ["income_certificate"])
+    assert exc_info.value.transient is False

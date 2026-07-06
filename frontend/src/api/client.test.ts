@@ -176,3 +176,48 @@ describe("Phase 1: documents + profile", () => {
     expect(result.status).toBe("user_corrected");
   });
 });
+
+describe("Phase 2: form fill", () => {
+  it("uploadForm sends multipart form data without a JSON content-type", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { form_id: "form-1", status: "pending" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const file = new File(["fake-bytes"], "form.jpg", { type: "image/jpeg" });
+    const result = await api.uploadForm(file, "income_certificate");
+
+    expect(result).toEqual({ form_id: "form-1", status: "pending" });
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/forms/upload");
+    expect(init.body).toBeInstanceOf(FormData);
+    const headers = new Headers(init.headers);
+    expect(headers.has("Content-Type")).toBe(false); // browser sets the multipart boundary
+    const body = init.body as FormData;
+    expect(body.get("form_type")).toBe("income_certificate");
+    expect(body.get("file")).toBe(file);
+  });
+
+  it("getForm requests the form endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "form-1",
+        form_type: "income_certificate",
+        display_name: "Income Certificate",
+        detected_form_type: "income_certificate",
+        status: "filled",
+        fill_error: null,
+        page_count: 1,
+        created_at: "2026-01-01T00:00:00Z",
+        filled_at: "2026-01-01T00:00:05Z",
+        fields: [],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.getForm("form-1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/forms/form-1");
+    expect(result.status).toBe("filled");
+  });
+});

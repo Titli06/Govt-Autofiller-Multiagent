@@ -8,12 +8,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.agent.tools.form_schema_tool import load_registry
 from app.api.routes import auth, documents, forms, history, profile
 from app.config import settings
 from app.core.logging import configure_logging, logger
 from app.services.storage import ensure_bucket
 
 configure_logging()
+
+# A malformed template (bad profile_key, unsupported format grammar, ...) must fail
+# app startup loudly, not surface as a mysterious 500 mid-fill (SPEC-PHASE2.md §11).
+load_registry()
 
 
 @asynccontextmanager

@@ -9,6 +9,9 @@ import type {
   DocType,
   DocumentStatus,
   DocumentUploadResponse,
+  FormOut,
+  FormType,
+  FormUploadResponse,
   ProfileField,
   ProfileOut,
   TokenResponse,
@@ -164,4 +167,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ value }),
     }),
+
+  uploadForm: (file: File, formType: FormType): Promise<FormUploadResponse> => {
+    const body = new FormData();
+    body.append("file", file);
+    body.append("form_type", formType);
+    return request<FormUploadResponse>("/forms/upload", { method: "POST", body });
+  },
+
+  getForm: (formId: string) => request<FormOut>(`/forms/${formId}`),
 };

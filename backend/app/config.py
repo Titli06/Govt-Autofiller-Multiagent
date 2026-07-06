@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     ocr_confidence_high: float = 0.90
     ocr_confidence_medium: float = 0.70
 
+    # Form fill worker (Phase 2)
+    fill_max_retries: int = 3
+    fill_retry_backoff_seconds: int = 5
+
     # Infra
     database_url: str = "postgresql+psycopg://govfill:govfill@localhost:5432/govfill"
     celery_broker_url: str = "redis://localhost:6379/0"
