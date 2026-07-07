@@ -227,20 +227,83 @@ finishes; both are currently interface-only and provably unreachable.
 ## Phase 5 — History + data deletion (UC5/UC6, FR10/FR11)
 Reuse profile across forms and honor the data-minimization commitment.
 
-- [ ] **DB:** cascade-delete rules (profile + documents + form history) for full purge
-- [ ] **Backend:** `GET /api/history` (past filled forms); `DELETE /api/profile` cascade (also purge S3 objects); confirm profile is fetched once and reused across forms in a session
-- [ ] **Frontend:** History dashboard (past forms + profile data); explicit, easy-to-find delete-my-data flow with confirmation
-- [ ] **Done when:** a user can file multiple forms reusing one profile, view them in history, and permanently delete everything in one action
+**Consistency notes carried forward from Phase 4 (checked 2026-07-07 — read before building):**
+- **Cascade delete is NOT automatic through `Form`/`FormField`.** `Form.profile_field_id` →
+  `profile_fields.id` and `FormField.source_doc_id` → `documents.id` are deliberately
+  **`ON DELETE SET NULL`**, not `CASCADE` (Phase 2 decision: an already-generated draft survives a
+  profile/document purge with its provenance pointer nulled, not the row deleted). That means
+  `DELETE /api/profile` must **explicitly** delete every `Form` row for the user (`FormField`
+  cascades from `Form` deletion, that FK *is* `CASCADE`) — it cannot rely on cascading through
+  `Profile`/`Document` deletion, or completed forms (and their `rendered_s3_key` PDFs) will silently
+  survive a "full purge." `ProfileField.origin == "manual"` (Phase 3) candidates have no
+  `source_doc_id` but still cascade correctly via `profile_id → profiles.id CASCADE` — no special
+  casing needed for those.
+- **S3 objects to purge, precisely:** `Document.s3_key`, `Form.s3_key`, **and** `Form.rendered_s3_key`
+  (Phase 3, nullable — only set after a first download) for every form being deleted.
+- **History should surface `schema_source`** (`"template"` | `"inferred"`, Phase 4) per past form —
+  meaningful context for a user reviewing their history (e.g. "Marriage Certificate (auto-detected)"
+  vs. a known template), not just a backend-internal detail.
+- **Frontend type gap to fix while building this:** `frontend/src/types/index.ts`'s
+  `FormOut.form_type`/`FormReviewOut.form_type` are still typed as the narrow `FormType` union
+  (`"income_certificate" | "scholarship_application"`), but Phase 4 (Decision 4) made
+  `declared_form_type` an arbitrary free-text string for inferred forms. Currently harmless — the
+  only union-typed read (`FormFill.tsx`'s `type_mismatch` message) is only reachable when the
+  declared type *is* a known registry type — but a History list rendering **past** forms
+  (including inferred ones) will hit real inferred-form strings; naively indexing
+  `FORM_TYPE_LABELS[historyItem.form_type]` will silently break for those. Widen both fields to
+  `string` and fix the one `FORM_TYPE_LABELS[...]` call site (cast or guard) when building History.
+
+- [ ] **DB:** cascade-delete rules (profile + documents + form history) for full purge — see the
+      `SET NULL` vs. `CASCADE` note above; explicit `Form` deletion by `user_id` required
+- [ ] **Backend:** `GET /api/history` (past filled forms, incl. `schema_source`); `DELETE /api/profile`
+      cascade (Profile → ProfileField, explicit Form/FormField delete, purge `Document.s3_key` +
+      `Form.s3_key` + `Form.rendered_s3_key` from S3); confirm profile is fetched once and reused
+      across forms in a session
+- [ ] **Frontend:** History dashboard (past forms + profile data, showing `schema_source` per form);
+      explicit, easy-to-find delete-my-data flow with confirmation; widen `FormType`-typed fields
+      per the note above
+- [ ] **Done when:** a user can file multiple forms reusing one profile, view them in history
+      (including past inferred-schema forms, clearly labeled), and permanently delete everything —
+      profile, documents, every form and its rendered PDF — in one action
 
 ---
 
 ## Phase 6 — Metrics instrumentation (PRD §9, NFR)
 Cross-cutting slice: the metrics are part of the deliverable, not optional telemetry.
 
-- [ ] **DB:** persist per-run metrics (latency, auto-fill %, schema-inference outcome)
-- [ ] **Backend:** `metrics/instrumentation.py` timers/counters across pipeline stages — end-to-end latency, % auto-filled at high confidence, auto-fill accuracy vs. ground truth (test set), time-saved, schema-inference success rate
-- [ ] **Frontend:** lightweight metrics view (per-form: fields auto-filled vs. reviewed, latency)
-- [ ] **Done when:** each completed form reports its latency and auto-fill/review breakdown, and aggregate metrics are queryable
+**Consistency notes carried forward from Phases 3–4 (checked 2026-07-07 — the "recoverable, not
+dashboarded" seams this phase is meant to wire up):**
+- **Phase 3** (SPEC-PHASE3.md §13): **verification pass/fail rate** (`FormField.verified` +
+  `verification_method` distribution) and an **auto-fill-accuracy proxy** (approved-as-is vs.
+  corrected fields — a correction signals "the auto-fill was wrong") and **review time**
+  (`reviewed_at − filled_at` per field; `approved` transition − `filled_at` per form, via
+  `Form.updated_at` at the commit that flips status to `approved`).
+- **Phase 4** (SPEC-PHASE4.md §13): **schema-inference success rate** (`Form.schema_source ==
+  "inferred"` fills reaching `in_review`/`approved` vs. `failed` — column already exists) and
+  **inferred-form review burden** (outstanding-field count on inferred vs. template forms,
+  evidencing UC3's "more fields flagged, expected" — computable today from existing columns).
+- **⚠️ Blocked without a schema change:** SPEC-PHASE4.md §13 also promises a **mapping-tier
+  distribution** metric (how confidently Document-AI-detected labels matched — `exact`/`strong`/
+  `weak`/`none`), but `mapping_tier` is computed in `confidence_scorer_tool.score()`'s output and
+  then **discarded** at persistence time — `workers/tasks.py._persist_form_fields` never writes it,
+  and `models/form.py`'s `FormField` has no such column (only `placement` was added in Phase 4).
+  **This phase must add a `mapping_tier` column** (nullable `String(16)`, mirroring how
+  `placement` was added — `NULL` for template fields) before this specific metric is buildable.
+- Frontend should also show whether a completed form came from `schema_source == "inferred"` next
+  to its metrics (ties into Phase 5's History view showing the same field).
+
+- [ ] **DB:** persist per-run metrics (latency, auto-fill %, schema-inference outcome); **add
+      `FormField.mapping_tier`** (see the blocked-metric note above) before computing tier
+      distribution
+- [ ] **Backend:** `metrics/instrumentation.py` timers/counters across pipeline stages — end-to-end
+      latency, % auto-filled at high confidence, auto-fill accuracy vs. ground truth (test set),
+      time-saved, schema-inference success rate, mapping-tier distribution, inferred-form review
+      burden, verification pass/fail rate, review time (see the itemized seams above — most of this
+      is arithmetic over existing columns, not new instrumentation)
+- [ ] **Frontend:** lightweight metrics view (per-form: fields auto-filled vs. reviewed, latency,
+      `schema_source`)
+- [ ] **Done when:** each completed form reports its latency and auto-fill/review breakdown, and
+      aggregate metrics (including the schema-inference and mapping-tier ones) are queryable
 
 ---
 
