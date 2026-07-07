@@ -52,24 +52,72 @@ confidence. Auto-fill path only; review UI comes in Phase 3.
 
 ---
 
-## Phase 3 — Verification + HITL review + download (UC4/UC7, FR7/FR8/FR9)
+## Phase 3 — Verification + HITL review + download (UC4/UC7, FR7/FR8/FR9)  ✅ implemented (see [SPEC-PHASE3.md](SPEC-PHASE3.md))
 Close the trust loop: verify against source docs, force human review of flagged fields, gate
 download. This is the safety-critical slice.
 
-- [ ] **DB:** review-state transitions on `FormField` (per-field `reviewed`, `review_reason`); form status lifecycle (draft → in_review → approved)
-- [ ] **Backend:** `document_verification_tool` — inserted into `agent/graph.py` **between** `profile_lookup_tool` and `confidence_scorer_tool`, re-checking each *mapped/formatted* form value against the source document (catches errors the Phase 1 extraction confidence alone wouldn't, e.g. a date-format conversion mistake) and updating the provisional score into a final one; HITL branch (below `CONFIDENCE_THRESHOLD` **or** high-stakes → route to review, regardless of self-reported confidence); `GET /api/forms/{id}/review`, `POST /api/forms/{id}/review` (approve/correct); `services/form_renderer.py` renders the approved output **and persists it to S3 via `services/storage.py`** (referenced from the `Form` record, so Phase 5's history can list/re-download it) + `GET /api/forms/{id}/download` — **blocked until all flagged fields resolved**; verify **never auto-submits**
-- [ ] **Frontend:** Review page — confidence-coded fields (green verified / yellow low-conf / red missing or high-stakes), one-click approve/edit each, side-by-side with source doc; download button disabled until review complete
-- [ ] **Done when:** a form with flagged fields cannot be downloaded until the user approves/corrects each; approved output downloads as a filled PDF, never submitted
+- [x] **DB:** `FormField` review/verification columns (`verified`, `verification_method`, `corrected_value_encrypted`, `review_action`, `reviewed_at`; `reviewed` now written); `Form` gains `rendered_s3_key` + skew guard (`skew_angle`, `placement_warning`); status lifecycle **`pending → processing → (in_review | approved | failed | type_mismatch)`** — `filled` retired; `profile_fields.source_doc_id` relaxed to nullable + `origin` (`document`|`manual`) so a review correction can write back a manual candidate; migration `0004`
+- [x] **Backend:** `document_verification_tool` — inserted into `agent/graph.py` **between** `profile_lookup_tool` and `confidence_scorer_tool`; **hybrid** re-check of each *mapped/formatted* value against its source doc — deterministic snippet re-ground first (catches e.g. a date-format conversion mistake), vision-LLM escalation only on a miss — folding into a final score (`confidence_scorer_tool` promotes verified-exact, drops `verification_failed` to a new top-precedence flag; **high-stakes always reviews**, FR8); `GET/POST /api/forms/{id}/review` (per-field approve / correct[+optional profile write-back] / approve-blank); `services/form_renderer.py` overlays approved values onto the original form → **PDF via deterministic template placement** (AcroForm-first, else template coordinates; PyMuPDF) + persists to S3 (referenced from `Form` for Phase 5 re-download) + `GET /api/forms/{id}/download` — **blocked until all flagged fields resolved**; **OpenCV skew/rotation sanity check** on upload → non-blocking `placement_warning` (coordinate placement assumes a flat, upright scan); Document AI field-detection fallback for template-less forms is **interface-only (real integration Phase 4)**; verify **never auto-submits**
+- [x] **Frontend:** Review page — confidence-coded fields (green verified / yellow low-conf / red missing or high-stakes / verification-failed), one-click approve/edit/approve-blank each, side-by-side with source doc, optional "also save to my profile" per correction, a **skew/placement warning banner**; download button disabled until review complete
+- [x] **Docs:** `README.md` documents the coordinate-placement limitation (flat, upright scan assumed; skew is warned, not auto-corrected) and that AcroForm-based filling is the preferred, skew-immune path
+- [x] **Done when:** a form with flagged fields cannot be downloaded until the user approves/corrects each; approved output downloads as a filled PDF overlaid on the original (template placement), never submitted; a significantly skewed upload warns the user to re-scan rather than silently misplacing fields
+      → verified end-to-end against the live stack with real Gemini calls (`classify_form` + `verify_value_on_document`), a real `0004` Postgres migration, and real MinIO storage: exact-match verification with zero LLM calls on the happy path, high-stakes-always-reviews even when verified, type-mismatch detection, the skew guard firing on a genuinely rotated (~14°) fixture and staying silent on an upright one, manual-candidate synthesis + propagation-to-existing-candidate, the download 409 gate, cross-user 404s, the post-approval-edit reopen/re-lock/re-render mechanic, full unmasked values in the downloaded PDF vs. masked everywhere else, encryption-at-rest, and a zero-PII log sweep across the whole session. Found and fixed one real bug live (a Unicode em-dash in the watermark default silently corrupted on render — see `memory/phase3-decisions.md`). Browser walkthrough of the Review UI itself was not done (no headless-browser tool available); vitest component/page tests stand in for it.
 
 ---
 
-## Phase 4 — Schema inference for unseen forms (UC3, FR4)
-The hardest, most differentiating path — do it only after the known-template path is solid.
+## Phase 4 — Schema inference for unseen forms (UC3, FR4/FR5)
+The hardest, most differentiating path (PRD's core thesis: *semantic* field matching on
+unstructured paperwork with no fixed schema, not string matching) — do it only after the
+known-template path is solid. Phase 3 already scaffolded the two things this phase actually
+finishes; both are currently interface-only and provably unreachable.
 
-- [ ] **DB:** mark `Form.schema_source` (`template` vs `inferred`) for auditability/metrics
-- [ ] **Backend:** `form_schema_tool` inference branch — extract required fields from the uploaded form itself when no template matches; inferred fields default to lower confidence (→ more land in review, as expected)
-- [ ] **Frontend:** surface "inferred form" state so the user knows more fields need review
-- [ ] **Done when:** upload a form with no template → system extracts its fields, fills what it can, routes the rest to review
+- [ ] **DB:** `Form.schema_source` (`template` | `inferred`) for auditability/metrics (PRD §9's
+      schema-inference-success-rate metric, Phase 6, reads this)
+- [ ] **Backend — field detection (finishes the Phase 3 stub):** `services/form_placement/document_ai.py`'s
+      `detect_fields()` currently raises a fixed "Phase 4" error — wire it to the real **Google
+      Document AI Form Parser** call (purpose-built bounding-box detection; the vision-LLM is
+      deliberately never asked for pixel coordinates, per `services/ocr/vision_llm.py`'s
+      docstring). Needs its own credential provisioning: Document AI uses GCP
+      **service-account** auth (`GOOGLE_APPLICATION_CREDENTIALS`), not the **API-key** auth
+      Gemini uses via `google-genai` — same GCP project only means shared billing, not a
+      drop-in. Config keys (`documentai_location`, `documentai_processor_id`) and the
+      `google-cloud-documentai` dependency are already in place from Phase 3, just unused.
+- [ ] **Backend — reachability gate (finishes the Phase 3 stub):** `POST /api/forms/upload`
+      currently `422`s (`UNKNOWN_FORM_TYPE`) any `form_type` not in the template registry —
+      by design, this makes the inference path provably unreachable today. Phase 4 must relax
+      this gate (e.g. accept a declared type with no template as "infer it") before any of the
+      above can ever run; needs its own regression test, since nothing exercises this path yet.
+- [ ] **Backend — semantic field-to-profile mapping (the actual hard part, net-new code):**
+      NOT an extension of `agent/tools/profile_lookup_tool.py` — that tool only does exact,
+      human-pre-declared `profile_key` lookup from a template JSON, with zero semantic
+      capability. An inferred form has no human-authored mapping, so this needs a new agent
+      tool that semantically matches each Document-AI-detected field *label* (e.g. "Father's
+      Name" vs "Name of Father") to one of `form_schema_tool.CANONICAL_PROFILE_KEYS`, LLM-based
+      per PRD §5's explicit rejection of regex/string matching ("brittle across format
+      variance"). The match confidence caps the field's score in `confidence_scorer_tool`,
+      consistent with "inferred fields default to lower confidence" (CLAUDE.md/PRD).
+- [ ] **Backend — high-stakes policy for inferred fields:** templates declare `high_stakes` by
+      hand per field; an inferred field has no such declaration. Derive it instead from the
+      *matched canonical profile_key* (dob/aadhaar_number/pan_number are always high-stakes
+      regardless of source) rather than per-field metadata that doesn't exist yet.
+- [ ] **Backend — rendering:** `services/form_renderer.py` gains a placement source for
+      `schema_source == "inferred"` forms — Document-AI-detected bounding boxes instead of a
+      template's `(x, y)` — reusing the existing "Additional fields" appended-page fallback
+      (Phase 3, §8.4.2) unchanged for anything undetected/low-confidence.
+- [ ] **Backend — everything else in the Phase 3 pipeline is reused unchanged:**
+      `document_verification_tool`, `confidence_scorer_tool`, and the review/approve/download
+      endpoints don't care whether a field's mapping/placement came from a template or
+      inference — no HITL/download-gate logic to rebuild here.
+- [ ] **Frontend:** surface "inferred form" state — reuse the Phase 3 placement-warning banner
+      UI pattern rather than building a new one. The Review page itself needs no new logic;
+      it's already generic over any `FormFieldReviewOut`.
+- [ ] **Testing:** mock Document AI calls the same way Gemini's `classify_form`/
+      `verify_value_on_document` are mocked (`app.workers.tasks`-style patching) — real
+      network/billed calls are never exercised in CI.
+- [ ] **Done when:** upload a form with no template → system detects its fields (Document AI),
+      semantically maps what it can to profile data at a discounted confidence, runs it through
+      the *same* verification/review/download pipeline as a known-template form, fills what it
+      can, and routes the rest to review.
 
 ---
 

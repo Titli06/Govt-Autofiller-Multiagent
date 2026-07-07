@@ -31,7 +31,6 @@ function AppShell({ children }: { children: JSX.Element }) {
         <Link to="/upload">Upload</Link>
         <Link to="/profile">Profile</Link>
         <Link to="/forms">Fill a form</Link>
-        <Link to="/review">Review</Link>
         <Link to="/history">History</Link>
         <span className="spacer" />
         <span style={{ fontSize: 13, color: "#666" }}>{user?.email}</span>
@@ -100,7 +99,7 @@ export default function App() {
         }
       />
       <Route
-        path="/review"
+        path="/forms/:id/review"
         element={
           <ProtectedRoute>
             <AppShell>

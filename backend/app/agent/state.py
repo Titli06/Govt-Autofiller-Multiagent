@@ -2,6 +2,12 @@
 
 Carries the form being filled, per-field candidate values, verification results,
 confidence scores, and the running list of fields routed to human review.
+
+Phase 3 note: the intermediate lookup dict (profile_lookup_tool's output, before
+confidence_scorer runs) also carries `candidate_snippet: str | None` — the selected
+candidate's decrypted source snippet, used by document_verification_tool to re-ground
+the formatted value deterministically before any LLM escalation. It is not part of
+FieldResult because it doesn't survive past verification (SPEC-PHASE3.md §3.1/§6.1).
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ class FieldResult(TypedDict):
     high_stakes: bool  # from the template (FR8 category)
     transformed: bool  # a format transform changed the value (recorded, not auto-flagged)
     verified: bool  # exact match against source document — ALWAYS False in Phase 2 (Phase 3 sets it)
+    verification_method: str | None  # exact | semantic | llm | user | None (nothing to verify)
     confidence: float  # provisional score, inherited from the profile candidate (§6.4)
     confidence_band: str  # high | medium | low
     needs_review: bool  # computed now, enforced in Phase 3

@@ -181,6 +181,26 @@ def extract(images: list[bytes], declared_doc_type: str) -> RawExtraction:
     return RawExtraction(detected_doc_type=payload.get("detected_doc_type"), fields=fields)
 
 
+def verify_value_on_document(images: list[bytes], value: str) -> bool:
+    """Strict boolean check: does this exact value appear on this identity document?
+    Used only on a deterministic-miss escalation (document_verification_tool, Phase 3
+    SPEC-PHASE3.md §3.2/§6.4) — never asked for pixel coordinates; field placement is
+    deterministic (services/form_renderer.py), not an LLM concern."""
+    schema = {
+        "type": "object",
+        "properties": {"matches": {"type": "boolean"}},
+        "required": ["matches"],
+    }
+    contents: list = [types.Part.from_bytes(data=img, mime_type=_MEDIA_TYPE) for img in images]
+    contents.append(
+        f"Does the value {value!r} appear on this identity document, allowing for "
+        "formatting differences (spacing, punctuation, date component order)? Answer "
+        "strictly as JSON matching the response schema."
+    )
+    payload = _generate_json(contents, schema)
+    return bool(payload.get("matches", False))
+
+
 def classify_form(images: list[bytes], known_form_types: list[str]) -> str:
     """Classifies a blank government form into one of `known_form_types`, or
     "unknown" when the model isn't confident it matches any of them (Phase 2's

@@ -24,11 +24,15 @@ dependencies = [
     "pillow",
     "pillow-heif",        # HEIC/HEIF (mobile camera) -> JPEG conversion
     "pypdf",
+    "pymupdf",             # form_renderer.py: AcroForm fill + template-coordinate overlay (Phase 3)
+    "opencv-python-headless",  # services/image_quality.py: skew/rotation sanity check (Phase 3)
+    "numpy",
     "python-jose[cryptography]",  # JWT
     "bcrypt",                     # password hashing (used directly; passlib is unmaintained)
     "cryptography",               # field-level PII encryption
     "python-multipart",           # file uploads
     "email-validator",            # pydantic EmailStr
+    "google-cloud-documentai",    # Phase-4-activated: form-parser field-detection fallback; unused in Phase 3
 ]
 
 [project.optional-dependencies]
@@ -44,5 +48,5 @@ line-length = 100
 testpaths = ["tests"]
 
 [[tool.mypy.overrides]]
-module = ["celery.*", "boto3.*", "botocore.*", "pillow_heif.*"]
+module = ["celery.*", "boto3.*", "botocore.*", "pillow_heif.*", "fitz.*", "cv2.*", "google.cloud.documentai.*"]
 ignore_missing_imports = true

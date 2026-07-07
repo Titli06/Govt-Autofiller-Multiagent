@@ -214,7 +214,7 @@ External: Vision-LLM API (Claude/GPT-4V) for OCR + extraction; Tesseract fallbac
 5. `confidence_scorer_tool` assigns a per-field score (exact source match = high; inferred/derived = lower; missing = flagged)
 6. High-confidence fields auto-fill; low-confidence or high-stakes (money, legal declarations, non-exact dates/IDs) route to review UI
 7. User approves/corrects flagged fields in review screen
-8. Final filled form (PDF or structured output) generated for user download — **never auto-submitted**
+8. Final filled form generated for user download by overlaying the approved values onto the original form — deterministic **template-based placement** (native fillable-form/AcroForm fields preferred, else pre-defined coordinates; AI field-detection is a fallback only for forms with no template). Low-quality or rotated scans are flagged for re-capture rather than silently misplacing values. **Never auto-submitted.**
 
 ---
 
@@ -246,6 +246,7 @@ External: Vision-LLM API (Claude/GPT-4V) for OCR + extraction; Tesseract fallbac
 | **Reliability** | Async job retry logic for failed OCR/LLM calls; jobs must not silently drop |
 | **Performance** | Full pipeline (upload → filled form ready) latency should be reported and tracked as a core metric, not assumed |
 | **Usability** | Review screen must be fast to use — one-click approve/edit per field, not a wall of raw text |
+| **Input quality** | Detect and warn on poor-quality uploads (e.g. skewed/rotated scans that would misplace values overlaid at fixed coordinates) so the user can re-capture *before* relying on the output; prefer position-independent fillable-form fields where available |
 | **Auditability** | Every auto-filled field should be traceable to the source document and the confidence score that justified auto-fill |
 
 ---
@@ -271,6 +272,8 @@ External: Vision-LLM API (Claude/GPT-4V) for OCR + extraction; Tesseract fallbac
 | Form schema drift (govt changes a form layout) | Schema-inference fallback path ensures known-template failures degrade gracefully rather than breaking entirely |
 | Users treating auto-fill as "final" and skipping review | UI must make review a required step for flagged fields before download is enabled, not an optional afterthought |
 | Legal/liability exposure from being seen as a "government form submission" tool | Explicit, visible scope statement: output is for the user's own review and manual submission only; no auto-submission feature ever built |
+| Coordinate-based overlay misplaces values on a skewed/rotated scan | Placement is template-first and deterministic; prefer native AcroForm (position-independent) fields over raw coordinates; run a skew/rotation sanity check on upload and **warn the user to re-scan** rather than silently misplacing fields; any field that can't be confidently placed is listed on an appended review page, never dropped |
+| General vision-LLM used for precise pixel-coordinate field detection (unreliable — LLMs aren't built for exact coordinates) | Use pre-defined template coordinates as the primary path; for template-less forms, use a purpose-built form-parser (Google Document AI) for bounding-box detection instead of asking the vision-LLM for coordinates |
 
 ---
 

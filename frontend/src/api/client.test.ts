@@ -205,7 +205,7 @@ describe("Phase 2: form fill", () => {
         form_type: "income_certificate",
         display_name: "Income Certificate",
         detected_form_type: "income_certificate",
-        status: "filled",
+        status: "approved",
         fill_error: null,
         page_count: 1,
         created_at: "2026-01-01T00:00:00Z",
@@ -218,6 +218,106 @@ describe("Phase 2: form fill", () => {
     const result = await api.getForm("form-1");
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/forms/form-1");
-    expect(result.status).toBe("filled");
+    expect(result.status).toBe("approved");
+  });
+});
+
+describe("Phase 3: verification + review + download", () => {
+  it("getFormReview requests the review endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        id: "form-1",
+        form_type: "income_certificate",
+        display_name: "Income Certificate",
+        status: "in_review",
+        download_ready: false,
+        total_fields: 1,
+        outstanding_fields: 1,
+        placement_warning: null,
+        fields: [],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.getFormReview("form-1");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/forms/form-1/review");
+    expect(result.download_ready).toBe(false);
+  });
+
+  it("submitReview posts the action as JSON", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        field: {
+          id: "field-1",
+          field_name: "aadhaar_number",
+          profile_key: "aadhaar_number",
+          display_value: "XXXX XXXX 2346",
+          confidence: 1.0,
+          confidence_band: "high",
+          verified: true,
+          verification_method: "user",
+          high_stakes: true,
+          transformed: false,
+          needs_review: true,
+          review_reason: "high_stakes",
+          reviewed: true,
+          review_action: "corrected",
+          outstanding: false,
+          source: { profile_field_id: null, document_id: "doc-1", doc_type: "aadhaar" },
+        },
+        status: "approved",
+        download_ready: true,
+        warning: null,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await api.submitReview("form-1", {
+      field_id: "field-1",
+      action: "correct",
+      value: "234123412346",
+      propagate_to_profile: true,
+    });
+
+    const [path, init] = fetchMock.mock.calls[0];
+    expect(path).toBe("/api/forms/form-1/review");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      field_id: "field-1",
+      action: "correct",
+      value: "234123412346",
+      propagate_to_profile: true,
+    });
+    expect(result.download_ready).toBe(true);
+  });
+
+  it("getFormFile returns a blob for the blank form", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("bytes", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const blob = await api.getFormFile("form-1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/forms/form-1/file");
+    expect(blob).toBeInstanceOf(Blob);
+  });
+
+  it("downloadForm returns a blob on success and throws ApiError on failure", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response("pdf-bytes", { status: 200, headers: { "Content-Type": "application/pdf" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const blob = await api.downloadForm("form-1");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/forms/form-1/download");
+    expect(blob).toBeInstanceOf(Blob);
+
+    const failMock = vi.fn().mockResolvedValue(
+      jsonResponse(409, { detail: { detail: "Review is not complete", code: "REVIEW_INCOMPLETE" } }),
+    );
+    vi.stubGlobal("fetch", failMock);
+    await expect(api.downloadForm("form-1")).rejects.toMatchObject({
+      status: 409,
+      code: "REVIEW_INCOMPLETE",
+    });
   });
 });

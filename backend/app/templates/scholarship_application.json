@@ -1,15 +1,19 @@
 {
   "form_type": "scholarship_application",
   "display_name": "Scholarship Application",
+  "placement": {
+    "reference_page_size": [595, 842],
+    "default_font_size": 10
+  },
   "required_fields": [
-    { "name": "applicant_name", "profile_key": "full_name", "high_stakes": false, "format": "as_is" },
-    { "name": "father_name", "profile_key": "father_name", "high_stakes": false, "format": "as_is" },
-    { "name": "date_of_birth", "profile_key": "dob", "high_stakes": true, "format": "date:%d/%m/%Y" },
-    { "name": "gender", "profile_key": "gender", "high_stakes": false, "format": "as_is" },
-    { "name": "address", "profile_key": "address", "high_stakes": false, "format": "single_line" },
-    { "name": "institution_name", "profile_key": null, "high_stakes": false, "format": "as_is" },
-    { "name": "course_name", "profile_key": null, "high_stakes": false, "format": "as_is" },
-    { "name": "annual_income", "profile_key": null, "high_stakes": true, "format": "as_is" },
-    { "name": "aadhaar_number", "profile_key": "aadhaar_number", "high_stakes": true, "format": "as_is" }
+    { "name": "applicant_name", "profile_key": "full_name", "high_stakes": false, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 200 } },
+    { "name": "father_name", "profile_key": "father_name", "high_stakes": false, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 235 } },
+    { "name": "date_of_birth", "profile_key": "dob", "high_stakes": true, "format": "date:%d/%m/%Y", "placement": { "page": 1, "x": 160, "y": 270 } },
+    { "name": "gender", "profile_key": "gender", "high_stakes": false, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 305 } },
+    { "name": "address", "profile_key": "address", "high_stakes": false, "format": "single_line", "placement": { "page": 1, "x": 160, "y": 340 } },
+    { "name": "institution_name", "profile_key": null, "high_stakes": false, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 375 } },
+    { "name": "course_name", "profile_key": null, "high_stakes": false, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 410 } },
+    { "name": "annual_income", "profile_key": null, "high_stakes": true, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 445 } },
+    { "name": "aadhaar_number", "profile_key": "aadhaar_number", "high_stakes": true, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 480 } }
   ]
 }

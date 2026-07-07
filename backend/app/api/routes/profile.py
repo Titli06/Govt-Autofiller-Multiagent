@@ -44,14 +44,18 @@ def _get_owned_field(field_id: uuid.UUID, db: Session, user: User) -> ProfileFie
     return field
 
 
-def _get_source_document(db: Session, field: ProfileField) -> Document:
+def _get_source_document(db: Session, field: ProfileField) -> Document | None:
+    """None for a manual candidate (Phase 3 Decision 11: origin="manual",
+    source_doc_id=NULL — a hand-typed form-review correction has no source document).
+    Otherwise source_doc_id is ON DELETE CASCADE, so the field row can't outlive it."""
+    if field.source_doc_id is None:
+        return None
     doc = db.get(Document, field.source_doc_id)
-    # source_doc_id is ON DELETE CASCADE — the field row can't outlive its document.
     assert doc is not None
     return doc
 
 
-def _to_out(field: ProfileField, doc: Document) -> ProfileFieldOut:
+def _to_out(field: ProfileField, doc: Document | None) -> ProfileFieldOut:
     aad = build_aad(field.profile_id, field.field_name)
     plaintext = decrypt_field(field.effective_value_encrypted, aad=aad)
     display_value = field.value_masked or plaintext
@@ -63,7 +67,10 @@ def _to_out(field: ProfileField, doc: Document) -> ProfileFieldOut:
         confidence_band=field.confidence_band,
         high_stakes=field.high_stakes,
         status=field.status,
-        source=ProfileFieldSource(document_id=doc.id, doc_type=doc.declared_doc_type),
+        source=ProfileFieldSource(
+            document_id=doc.id if doc else None,
+            doc_type=doc.declared_doc_type if doc else None,
+        ),
     )
 
 

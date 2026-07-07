@@ -1,12 +1,16 @@
 {
   "form_type": "income_certificate",
   "display_name": "Income Certificate",
+  "placement": {
+    "reference_page_size": [595, 842],
+    "default_font_size": 10
+  },
   "required_fields": [
-    { "name": "applicant_name", "profile_key": "full_name", "high_stakes": false, "format": "as_is" },
-    { "name": "father_name", "profile_key": "father_name", "high_stakes": false, "format": "as_is" },
-    { "name": "date_of_birth", "profile_key": "dob", "high_stakes": true, "format": "date:%d/%m/%Y" },
-    { "name": "address", "profile_key": "address", "high_stakes": false, "format": "single_line" },
-    { "name": "annual_income", "profile_key": null, "high_stakes": true, "format": "as_is" },
-    { "name": "aadhaar_number", "profile_key": "aadhaar_number", "high_stakes": true, "format": "as_is" }
+    { "name": "applicant_name", "profile_key": "full_name", "high_stakes": false, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 220 } },
+    { "name": "father_name", "profile_key": "father_name", "high_stakes": false, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 260 } },
+    { "name": "date_of_birth", "profile_key": "dob", "high_stakes": true, "format": "date:%d/%m/%Y", "placement": { "page": 1, "x": 160, "y": 300 } },
+    { "name": "address", "profile_key": "address", "high_stakes": false, "format": "single_line", "placement": { "page": 1, "x": 160, "y": 340 } },
+    { "name": "annual_income", "profile_key": null, "high_stakes": true, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 380 } },
+    { "name": "aadhaar_number", "profile_key": "aadhaar_number", "high_stakes": true, "format": "as_is", "placement": { "page": 1, "x": 160, "y": 420 } }
   ]
 }

@@ -77,5 +77,22 @@ class Settings(BaseSettings):
     # Confidence policy — fields below this route to mandatory human review.
     confidence_threshold: float = 0.90
 
+    # Verification (Phase 3) — score a verification_failed field drops to (band: low).
+    verify_low_confidence: float = 0.30
+
+    # Overlay rendering (Phase 3). Plain ASCII hyphen, not an em-dash: PyMuPDF's
+    # insert_text() with the default base-14 font (Helvetica/WinAnsi) silently
+    # replaces non-Latin-1 characters (e.g. U+2014) with a glyph substitute instead
+    # of erroring, which corrupted this exact string on the actual rendered PDF when
+    # verified live (see memory/phase3-decisions.md).
+    render_watermark_text: str = "DRAFT - NOT SUBMITTED"
+
+    # Input-quality guard (Phase 3) — coordinate placement assumes a flat, upright scan.
+    skew_warn_degrees: float = 5.0
+
+    # Document AI field-detection fallback (Phase 4-activated — unused in Phase 3)
+    documentai_location: str = "us"
+    documentai_processor_id: str = ""
+
 
 settings = Settings()

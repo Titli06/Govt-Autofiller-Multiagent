@@ -51,8 +51,10 @@ export interface DocumentStatus {
 }
 
 export interface ProfileFieldSource {
-  document_id: string;
-  doc_type: DocType;
+  // Null for a manual candidate synthesized from a Phase 3 form-review correction —
+  // it has no source document.
+  document_id: string | null;
+  doc_type: DocType | null;
 }
 
 export interface ProfileField {
@@ -74,9 +76,17 @@ export interface ProfileOut {
 
 export type FormType = "income_certificate" | "scholarship_application";
 
-export type FormStatus = "pending" | "processing" | "filled" | "failed" | "type_mismatch";
+// "filled" is retired as of Phase 3 — a zero-flag pipeline lands directly on
+// "approved"; any flagged field lands on "in_review".
+export type FormStatus = "pending" | "processing" | "in_review" | "approved" | "failed" | "type_mismatch";
 
-export type ReviewReason = "no_mapping" | "no_candidate" | "high_stakes" | "unverified_source" | "low_confidence";
+export type ReviewReason =
+  | "no_mapping"
+  | "no_candidate"
+  | "verification_failed"
+  | "high_stakes"
+  | "unverified_source"
+  | "low_confidence";
 
 export interface FormUploadResponse {
   form_id: string;
@@ -115,4 +125,56 @@ export interface FormOut {
   created_at: string;
   filled_at: string | null;
   fields: FormFieldOut[];
+}
+
+// --- Phase 3: verification + HITL review + download ----------------------------------
+
+export type VerificationMethod = "exact" | "semantic" | "llm" | "user";
+
+export type ReviewActionType = "approve" | "correct" | "approve_blank";
+
+export interface FormFieldReviewOut {
+  id: string;
+  field_name: string;
+  profile_key: string | null;
+  display_value: string | null;
+  confidence: number;
+  confidence_band: ConfidenceBand;
+  verified: boolean;
+  verification_method: VerificationMethod | null;
+  high_stakes: boolean;
+  transformed: boolean;
+  needs_review: boolean;
+  review_reason: ReviewReason | null;
+  reviewed: boolean;
+  review_action: "approved" | "corrected" | "approved_blank" | null;
+  // needs_review AND NOT reviewed — the only thing that blocks download.
+  outstanding: boolean;
+  source: FormFieldSource;
+}
+
+export interface FormReviewOut {
+  id: string;
+  form_type: FormType;
+  display_name: string;
+  status: FormStatus;
+  download_ready: boolean;
+  total_fields: number;
+  outstanding_fields: number;
+  placement_warning: string | null;
+  fields: FormFieldReviewOut[];
+}
+
+export interface ReviewActionRequest {
+  field_id: string;
+  action: ReviewActionType;
+  value?: string;
+  propagate_to_profile?: boolean;
+}
+
+export interface ReviewActionResponse {
+  field: FormFieldReviewOut;
+  status: FormStatus;
+  download_ready: boolean;
+  warning: string | null;
 }

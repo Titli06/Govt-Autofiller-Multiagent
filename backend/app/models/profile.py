@@ -63,11 +63,15 @@ class ProfileField(Base):
     profile_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    # Provenance: which uploaded document this candidate value came from.
-    source_doc_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    # Provenance: which uploaded document this candidate value came from. NULL for a
+    # manual candidate synthesized from a hand-typed form-review correction (Phase 3
+    # Decision 11) — there is no source document to point at.
+    source_doc_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), nullable=True
     )
     field_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    # "document" (OCR-extracted, Phase 1) | "manual" (hand-typed in Phase 3 review)
+    origin: Mapped[str] = mapped_column(String(16), nullable=False, default="document")
 
     # Immutable audit of what OCR produced (AES-256-GCM ciphertext, see core/encryption.py).
     value_encrypted: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)

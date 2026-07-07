@@ -1,8 +1,9 @@
 """Form model: an uploaded form + its filled fields, confidence, and review state.
 
 Persists per-field provenance and confidence so every auto-filled value is auditable.
-status lifecycle: pending -> processing -> (filled | failed | type_mismatch). Phase 3
-adds in_review/approved. See SPEC-PHASE2.md §4.
+status lifecycle: pending -> processing -> (in_review | approved | failed |
+type_mismatch). `filled` is retired as of Phase 3 — a zero-flag pipeline lands
+straight on `approved`; any flagged field lands on `in_review`. See SPEC-PHASE3.md §4.
 """
 
 from __future__ import annotations
@@ -48,6 +49,14 @@ class Form(Base):
     # Safe, non-PII reason on failure/mismatch — never raw model output or PII (CLAUDE.md).
     fill_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Cached overlay-PDF object key; NULL until first download or after a review edit
+    # invalidates it (SPEC-PHASE3.md Decision 7/9).
+    rendered_s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Dominant page rotation (degrees) estimated at fill time; NULL if not measured.
+    skew_angle: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Safe, non-PII advisory when the scan is significantly skewed (coordinate
+    # placement may be off); NULL when upright or on the AcroForm path (Decision 15).
+    placement_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -91,12 +100,22 @@ class FormField(Base):
     confidence_band: Mapped[str] = mapped_column(String(16), nullable=False)  # high|medium|low
     high_stakes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     transformed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Set by document_verification_tool (Phase 3); false for missing/unverified fields.
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # exact | semantic | llm | user | null (missing field — nothing to verify)
+    verification_method: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # AES-256-GCM of the user's corrected value (AAD (form_id, field_name)); effective
+    # value = corrected if present else the auto-filled value_encrypted.
+    corrected_value_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     # Computed now, enforced in Phase 3 (review UI + download gating).
     needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     review_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # Phase 3 sets this
-    # Full audit of every trigger considered: {missing, high_stakes, unverified_source,
-    # low_confidence, transformed}. review_reason is just the highest-precedence one.
+    # approved | corrected | approved_blank | null (unreviewed)
+    review_action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Full audit of every trigger considered: {missing, verification_failed, high_stakes,
+    # unverified_source, low_confidence, transformed}. review_reason is the top-precedence one.
     flags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -108,3 +127,9 @@ class FormField(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    @property
+    def effective_value_encrypted(self) -> bytes | None:
+        """The auto-filled value_encrypted, or the corrected_value_encrypted if the
+        user edited it during review (mirrors ProfileField's convention)."""
+        return self.corrected_value_encrypted or self.value_encrypted

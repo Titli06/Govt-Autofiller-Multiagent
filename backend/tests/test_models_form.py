@@ -64,3 +64,46 @@ def test_distinct_field_names_on_same_form_allowed(db_session):
 
     rows = db_session.query(FormField).filter_by(form_id=form.id).all()
     assert len(rows) == 2
+
+
+# --- Phase 3: verification/review columns --------------------------------------------
+
+
+def test_verified_defaults_false(db_session):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user)
+    field = _field(form.id)
+    db_session.add(field)
+    db_session.commit()
+
+    db_session.refresh(field)
+    assert field.verified is False
+    assert field.verification_method is None
+    assert field.review_action is None
+    assert field.reviewed_at is None
+
+
+def test_effective_value_prefers_correction(db_session):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user)
+    field = _field(form.id, value_encrypted=b"auto-filled")
+    db_session.add(field)
+    db_session.commit()
+
+    assert field.effective_value_encrypted == b"auto-filled"
+
+    field.corrected_value_encrypted = b"corrected"
+    db_session.commit()
+
+    assert field.effective_value_encrypted == b"corrected"
+
+
+def test_new_form_columns_default_null(db_session):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user)
+    db_session.commit()
+
+    db_session.refresh(form)
+    assert form.rendered_s3_key is None
+    assert form.skew_angle is None
+    assert form.placement_warning is None

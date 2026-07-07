@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
@@ -28,49 +28,28 @@ const baseForm = {
   filled_at: "2026-01-01T00:00:05Z",
 };
 
-describe("FormFill page", () => {
-  it("uploads the selected file with the chosen form type and polls to a filled draft", async () => {
-    vi.mocked(api.uploadForm).mockResolvedValue({ form_id: "form-1", status: "pending" });
-    vi.mocked(api.getForm).mockResolvedValue({
-      ...baseForm,
-      status: "filled",
-      fields: [
-        {
-          id: "field-1",
-          field_name: "applicant_name",
-          profile_key: "full_name",
-          display_value: "Ravi Kumar",
-          confidence: 0.95,
-          confidence_band: "high",
-          high_stakes: false,
-          transformed: false,
-          needs_review: false,
-          review_reason: null,
-          reviewed: false,
-          source: { profile_field_id: "pf-1", document_id: "doc-1", doc_type: "aadhaar" },
-        },
-        {
-          id: "field-2",
-          field_name: "annual_income",
-          profile_key: null,
-          display_value: null,
-          confidence: 0,
-          confidence_band: "low",
-          high_stakes: true,
-          transformed: false,
-          needs_review: true,
-          review_reason: "no_mapping",
-          reviewed: false,
-          source: { profile_field_id: null, document_id: null, doc_type: null },
-        },
-      ],
-    });
+function ReviewStub() {
+  const { id } = useParams<{ id: string }>();
+  return <div>Review page for form {id}</div>;
+}
 
-    render(
-      <MemoryRouter>
-        <FormFill />
-      </MemoryRouter>,
-    );
+function renderWithRouting() {
+  return render(
+    <MemoryRouter initialEntries={["/forms"]}>
+      <Routes>
+        <Route path="/forms" element={<FormFill />} />
+        <Route path="/forms/:id/review" element={<ReviewStub />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe("FormFill page", () => {
+  it("uploads the selected file and navigates to the review page once in_review", async () => {
+    vi.mocked(api.uploadForm).mockResolvedValue({ form_id: "form-1", status: "pending" });
+    vi.mocked(api.getForm).mockResolvedValue({ ...baseForm, status: "in_review", fields: [] });
+
+    renderWithRouting();
 
     selectFile(screen.getByLabelText(/blank form image or pdf/i));
     fireEvent.click(screen.getByRole("button", { name: /^upload$/i }));
@@ -78,14 +57,19 @@ describe("FormFill page", () => {
     await waitFor(() =>
       expect(api.uploadForm).toHaveBeenCalledWith(expect.any(File), "income_certificate"),
     );
-    await waitFor(() => expect(screen.getByText(/status: filled/i)).toBeDefined());
+    await waitFor(() => expect(screen.getByText(/review page for form form-1/i)).toBeDefined());
+  });
 
-    expect(screen.getByText("Ravi Kumar")).toBeDefined();
-    expect(screen.getByTestId("draft-field-annual_income")).toBeDefined();
-    expect(screen.getByText(/no mapping/i)).toBeDefined();
-    // Phase 2's draft is read-only: no approve/edit/download controls.
-    expect(screen.queryByRole("button", { name: /confirm/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /download/i })).toBeNull();
+  it("navigates to review once approved (zero-flag pipeline)", async () => {
+    vi.mocked(api.uploadForm).mockResolvedValue({ form_id: "form-1", status: "pending" });
+    vi.mocked(api.getForm).mockResolvedValue({ ...baseForm, status: "approved", fields: [] });
+
+    renderWithRouting();
+
+    selectFile(screen.getByLabelText(/blank form image or pdf/i));
+    fireEvent.click(screen.getByRole("button", { name: /^upload$/i }));
+
+    await waitFor(() => expect(screen.getByText(/review page for form form-1/i)).toBeDefined());
   });
 
   it("shows a clear message when the form type doesn't match", async () => {
@@ -98,11 +82,7 @@ describe("FormFill page", () => {
       fields: [],
     });
 
-    render(
-      <MemoryRouter>
-        <FormFill />
-      </MemoryRouter>,
-    );
+    renderWithRouting();
 
     selectFile(screen.getByLabelText(/blank form image or pdf/i));
     fireEvent.click(screen.getByRole("button", { name: /^upload$/i }));
@@ -110,12 +90,25 @@ describe("FormFill page", () => {
     await waitFor(() => expect(screen.getByText(/not a income certificate/i)).toBeDefined());
   });
 
+  it("shows the fill error when the job fails", async () => {
+    vi.mocked(api.uploadForm).mockResolvedValue({ form_id: "form-1", status: "pending" });
+    vi.mocked(api.getForm).mockResolvedValue({
+      ...baseForm,
+      status: "failed",
+      fill_error: "unsupported form type",
+      fields: [],
+    });
+
+    renderWithRouting();
+
+    selectFile(screen.getByLabelText(/blank form image or pdf/i));
+    fireEvent.click(screen.getByRole("button", { name: /^upload$/i }));
+
+    await waitFor(() => expect(screen.getByText("unsupported form type")).toBeDefined());
+  });
+
   it("disables the upload button until a file is chosen", () => {
-    render(
-      <MemoryRouter>
-        <FormFill />
-      </MemoryRouter>,
-    );
+    renderWithRouting();
     expect(screen.getByRole("button", { name: /^upload$/i })).toHaveProperty("disabled", true);
   });
 });

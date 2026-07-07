@@ -10,10 +10,13 @@ import type {
   DocumentStatus,
   DocumentUploadResponse,
   FormOut,
+  FormReviewOut,
   FormType,
   FormUploadResponse,
   ProfileField,
   ProfileOut,
+  ReviewActionRequest,
+  ReviewActionResponse,
   TokenResponse,
   User,
 } from "../types";
@@ -176,4 +179,28 @@ export const api = {
   },
 
   getForm: (formId: string) => request<FormOut>(`/forms/${formId}`),
+
+  getFormReview: (formId: string) => request<FormReviewOut>(`/forms/${formId}/review`),
+
+  submitReview: (formId: string, body: ReviewActionRequest) =>
+    request<ReviewActionResponse>(`/forms/${formId}/review`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // Bearer-authenticated (like getDocumentFile) — fetched as a Blob, not a plain <img src>.
+  getFormFile: async (formId: string): Promise<Blob> => {
+    const res = await rawRequest(`/forms/${formId}/file`, { method: "GET" });
+    if (!res.ok) throw new ApiError(res.status, "Failed to load the blank form");
+    return res.blob();
+  },
+
+  downloadForm: async (formId: string): Promise<Blob> => {
+    const res = await rawRequest(`/forms/${formId}/download`, { method: "GET" });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw parseError(res.status, data);
+    }
+    return res.blob();
+  },
 };

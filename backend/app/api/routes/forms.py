@@ -3,33 +3,71 @@
 Download is BLOCKED until every flagged field has been reviewed. No route ever submits
 the form to an external portal.
 
-Phase 2 implements upload + read-only draft retrieval only. Review/approve/correct,
-download (gated), and rendering are Phase 3 — see SPEC-PHASE2.md.
+Phase 2 implemented upload + read-only draft retrieval only. Phase 3 (SPEC-PHASE3.md
+§8) adds the review projection/action endpoints, the gated download, and the
+side-by-side blank-form file endpoint.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
 from fastapi import Form as FormBody
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agent.tools.form_schema_tool import known_types, load_template
 from app.api.deps import get_current_user, get_db
 from app.config import settings
-from app.core.encryption import build_aad, decrypt_field
+from app.core.encryption import build_aad, decrypt_field, encrypt_field, mask_for
 from app.core.logging import logger
+from app.core.validators import (
+    is_valid_aadhaar,
+    is_valid_pan,
+    normalize_aadhaar,
+    normalize_dob,
+    normalize_gender,
+    normalize_pan,
+    parse_dob,
+)
 from app.models.document import Document
 from app.models.form import Form, FormField
+from app.models.profile import Profile, ProfileField
 from app.models.user import User
-from app.schemas.form import FormFieldOut, FormFieldSource, FormOut, FormUploadResponse
-from app.services.storage import put_document
+from app.schemas.form import (
+    FormFieldOut,
+    FormFieldReviewOut,
+    FormFieldSource,
+    FormOut,
+    FormReviewOut,
+    FormUploadResponse,
+    ReviewActionRequest,
+    ReviewActionResponse,
+)
+from app.services.form_renderer import RenderError, RenderField, render
+from app.services.storage import get_document, put_document
 from app.workers.tasks import fill_form_task
 
 router = APIRouter()
 
 _READ_CHUNK_BYTES = 1024 * 1024
+_FIELDS_VISIBLE_STATUSES = {"in_review", "approved"}
+
+# Re-validate a correction against the same format rule extraction grounding uses
+# (mirrors app/api/routes/profile.py) — free-text form fields (name/address/income)
+# have no format rule and are accepted verbatim (Decision 12).
+_FIELD_VALIDATORS = {
+    "aadhaar_number": is_valid_aadhaar,
+    "pan_number": is_valid_pan,
+    "dob": lambda v: parse_dob(v) is not None,
+    "gender": lambda v: normalize_gender(v) is not None,
+}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def _err(status_code: int, detail: str, code: str) -> HTTPException:
@@ -115,7 +153,7 @@ def get_form(
         display_name = form.declared_form_type
 
     fields: list[FormFieldOut] = []
-    if form.status == "filled":
+    if form.status in _FIELDS_VISIBLE_STATUSES:
         rows = db.query(FormField).filter(FormField.form_id == form.id).all()
         doc_ids = {row.source_doc_id for row in rows if row.source_doc_id is not None}
         docs = {d.id: d for d in db.query(Document).filter(Document.id.in_(doc_ids)).all()} if doc_ids else {}
@@ -140,9 +178,10 @@ def get_form(
 
 def _to_out(field: FormField, doc: Document | None) -> FormFieldOut:
     display_value = None
-    if field.value_encrypted is not None:
+    effective = field.effective_value_encrypted
+    if effective is not None:
         aad = build_aad(field.form_id, field.field_name)
-        plaintext = decrypt_field(field.value_encrypted, aad=aad)
+        plaintext = decrypt_field(effective, aad=aad)
         display_value = field.value_masked or plaintext
     return FormFieldOut(
         id=field.id,
@@ -162,3 +201,284 @@ def _to_out(field: FormField, doc: Document | None) -> FormFieldOut:
             doc_type=doc.declared_doc_type if doc else None,
         ),
     )
+
+
+def _to_review_out(field: FormField, doc: Document | None) -> FormFieldReviewOut:
+    display_value = None
+    effective = field.effective_value_encrypted
+    if effective is not None:
+        aad = build_aad(field.form_id, field.field_name)
+        plaintext = decrypt_field(effective, aad=aad)
+        display_value = field.value_masked or plaintext
+    return FormFieldReviewOut(
+        id=field.id,
+        field_name=field.field_name,
+        profile_key=field.profile_key,
+        display_value=display_value,
+        confidence=field.confidence,
+        confidence_band=field.confidence_band,
+        verified=field.verified,
+        verification_method=field.verification_method,
+        high_stakes=field.high_stakes,
+        transformed=field.transformed,
+        needs_review=field.needs_review,
+        review_reason=field.review_reason,
+        reviewed=field.reviewed,
+        review_action=field.review_action,
+        outstanding=field.needs_review and not field.reviewed,
+        source=FormFieldSource(
+            profile_field_id=field.profile_field_id,
+            document_id=field.source_doc_id,
+            doc_type=doc.declared_doc_type if doc else None,
+        ),
+    )
+
+
+def _docs_by_id(db: Session, rows: list[FormField]) -> dict[uuid.UUID, Document]:
+    doc_ids = {row.source_doc_id for row in rows if row.source_doc_id is not None}
+    if not doc_ids:
+        return {}
+    return {d.id: d for d in db.query(Document).filter(Document.id.in_(doc_ids)).all()}
+
+
+@router.get("/{form_id}/review", response_model=FormReviewOut)
+def get_form_review(
+    form_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> FormReviewOut:
+    form = _get_owned_form(form_id, db, user)
+
+    try:
+        display_name = load_template(form.declared_form_type).display_name
+    except Exception:
+        display_name = form.declared_form_type
+
+    rows = db.query(FormField).filter(FormField.form_id == form.id).all()
+    docs = _docs_by_id(db, rows)
+    fields = [
+        _to_review_out(row, docs.get(row.source_doc_id) if row.source_doc_id is not None else None)
+        for row in rows
+    ]
+    outstanding = sum(1 for f in fields if f.outstanding)
+
+    return FormReviewOut(
+        id=form.id,
+        form_type=form.declared_form_type,
+        display_name=display_name,
+        status=form.status,
+        download_ready=form.status == "approved",
+        total_fields=len(fields),
+        outstanding_fields=outstanding,
+        placement_warning=form.placement_warning,
+        fields=fields,
+    )
+
+
+def _to_canonical(profile_key: str, value: str) -> tuple[str, bool]:
+    """Converts a form-review correction (already format-checked against the FORM's
+    expected format) into the canonical form the profile store uses (SPEC-PHASE3.md
+    §8.2 Decision 10/11): dates re-parsed to ISO, IDs normalized. Free text (name/
+    address/gender-with-no-match) passes through as-is."""
+    if profile_key == "dob":
+        iso = normalize_dob(value)
+        return (iso or value, iso is not None)
+    if profile_key == "aadhaar_number":
+        return (normalize_aadhaar(value), is_valid_aadhaar(value))
+    if profile_key == "pan_number":
+        return (normalize_pan(value), is_valid_pan(value))
+    if profile_key == "gender":
+        canonical = normalize_gender(value)
+        return (canonical or value, canonical is not None)
+    return (value, True)
+
+
+def _propagate_correction(
+    db: Session, user: User, field: FormField, form_value: str
+) -> str | None:
+    """Decision 10/11: updates the source ProfileField candidate, or synthesizes a
+    manual one for a corrected missing field. Returns a warning string when
+    propagation is a no-op (a no_mapping field has no canonical target), else None."""
+    if field.profile_key is None:
+        return "This field has no matching profile field — the correction was saved to the form only."
+
+    canonical, ok = _to_canonical(field.profile_key, form_value)
+    if not ok:
+        raise _err(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "Value can't be converted to a saved profile value",
+            "INVALID_VALUE",
+        )
+
+    if field.profile_field_id is not None:
+        pf = db.get(ProfileField, field.profile_field_id)
+        if pf is not None:
+            aad = build_aad(pf.profile_id, pf.field_name)
+            pf.corrected_value_encrypted = encrypt_field(canonical, aad=aad)
+            pf.value_masked = mask_for(pf.field_name, canonical)
+            pf.status = "user_corrected"
+            pf.confidence = 1.0
+            pf.confidence_band = "high"
+            return None
+
+    # No backing candidate (the field was missing): synthesize a manual one.
+    profile = db.scalar(select(Profile).where(Profile.user_id == user.id))
+    if profile is None:
+        profile = Profile(user_id=user.id)
+        db.add(profile)
+        db.flush()
+
+    aad = build_aad(profile.id, field.profile_key)
+    db.add(
+        ProfileField(
+            profile_id=profile.id,
+            source_doc_id=None,
+            origin="manual",
+            field_name=field.profile_key,
+            value_encrypted=encrypt_field(canonical, aad=aad),
+            value_masked=mask_for(field.profile_key, canonical),
+            confidence=1.0,
+            confidence_band="high",
+            high_stakes=field.high_stakes,
+            status="user_corrected",
+        )
+    )
+    return None
+
+
+@router.post("/{form_id}/review", response_model=ReviewActionResponse)
+def submit_review_action(
+    form_id: uuid.UUID,
+    body: ReviewActionRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ReviewActionResponse:
+    form = _get_owned_form(form_id, db, user)
+    field = (
+        db.query(FormField)
+        .filter(FormField.id == body.field_id, FormField.form_id == form.id)
+        .one_or_none()
+    )
+    if field is None:
+        raise _err(status.HTTP_404_NOT_FOUND, "Field not found", "NOT_FOUND")
+
+    # Decision 9: a correction on an already-approved form deliberately re-opens the
+    # field (below) rather than instantly re-resolving it.
+    was_approved = form.status == "approved"
+    warning: str | None = None
+
+    if body.action == "approve":
+        field.reviewed = True
+        field.review_action = "approved"
+        field.reviewed_at = _now()
+
+    elif body.action == "approve_blank":
+        if field.effective_value_encrypted is not None:
+            raise _err(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "Field already has a value", "NOT_BLANK"
+            )
+        field.reviewed = True
+        field.review_action = "approved_blank"
+        field.reviewed_at = _now()
+
+    elif body.action == "correct":
+        if body.value is None:
+            raise _err(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "value is required for correct", "MISSING_VALUE"
+            )
+        value = body.value.strip()
+        validator = _FIELD_VALIDATORS.get(field.profile_key or "")
+        if validator is not None and not validator(value):
+            raise _err(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Value fails validation for this field",
+                "INVALID_VALUE",
+            )
+
+        aad = build_aad(form.id, field.field_name)
+        field.corrected_value_encrypted = encrypt_field(value, aad=aad)
+        field.value_masked = mask_for(field.profile_key, value) if field.profile_key else None
+        field.verified = True
+        field.verification_method = "user"
+        field.confidence = 1.0
+        field.confidence_band = "high"
+        field.review_action = "corrected"
+        field.reviewed_at = _now()
+        field.reviewed = not was_approved
+
+        if body.propagate_to_profile:
+            warning = _propagate_correction(db, user, field, value)
+
+    form.rendered_s3_key = None  # any successful review action invalidates the cache
+
+    db.flush()
+    rows = db.query(FormField).filter(FormField.form_id == form.id).all()
+    outstanding = any(r.needs_review and not r.reviewed for r in rows)
+    form.status = "in_review" if outstanding else "approved"
+    db.commit()
+
+    doc = db.get(Document, field.source_doc_id) if field.source_doc_id is not None else None
+    return ReviewActionResponse(
+        field=_to_review_out(field, doc),
+        status=form.status,
+        download_ready=form.status == "approved",
+        warning=warning,
+    )
+
+
+@router.get("/{form_id}/download")
+def download_form(
+    form_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    form = _get_owned_form(form_id, db, user)
+    if form.status != "approved":
+        raise _err(status.HTTP_409_CONFLICT, "Review is not complete", "REVIEW_INCOMPLETE")
+
+    if form.rendered_s3_key is None:
+        rows = db.query(FormField).filter(FormField.form_id == form.id).all()
+        render_fields: list[RenderField] = []
+        for row in rows:
+            effective = row.effective_value_encrypted
+            value = None
+            if effective is not None:
+                aad = build_aad(form.id, row.field_name)
+                value = decrypt_field(effective, aad=aad)
+            render_fields.append(RenderField(field_name=row.field_name, value=value))
+
+        blank_bytes = get_document(form.s3_key)
+        try:
+            pdf_bytes = render(
+                form.declared_form_type, render_fields, blank_bytes, form.content_type or "application/pdf"
+            )
+        except RenderError:
+            logger.error("form_download render_failed form_id=%s", form.id)
+            raise _err(
+                status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not render the form", "RENDER_FAILED"
+            )
+
+        form.rendered_s3_key = put_document(str(user.id), pdf_bytes, "application/pdf")
+        db.commit()
+    else:
+        pdf_bytes = get_document(form.rendered_s3_key)
+
+    logger.info("form_download form_id=%s", form.id)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{form.declared_form_type}.pdf"'},
+    )
+
+
+@router.get("/{form_id}/file")
+def get_form_file(
+    form_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
+    """Serves the ORIGINAL blank uploaded form for the review page's side-by-side
+    preview (SPEC-PHASE3.md §8.6) — mirrors GET /documents/{id}/file."""
+    form = _get_owned_form(form_id, db, user)
+    data = get_document(form.s3_key)
+    return Response(content=data, media_type=form.content_type or "application/octet-stream")

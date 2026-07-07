@@ -144,3 +144,83 @@ def test_one_profile_per_user_unique(db_session):
     with pytest.raises(IntegrityError):
         db_session.commit()
     db_session.rollback()
+
+
+# --- Phase 3: manual write-back candidates (nullable source_doc_id, origin) ----------
+
+
+def test_manual_candidate_allows_null_source_doc(db_session):
+    user = _make_user(db_session)
+    profile = Profile(user_id=user.id)
+    db_session.add(profile)
+    db_session.flush()
+
+    manual = ProfileField(
+        profile_id=profile.id,
+        source_doc_id=None,
+        origin="manual",
+        field_name="father_name",
+        value_encrypted=b"cipher",
+        confidence=1.0,
+        confidence_band="high",
+        high_stakes=False,
+        status="user_corrected",
+    )
+    db_session.add(manual)
+    db_session.commit()
+
+    db_session.refresh(manual)
+    assert manual.source_doc_id is None
+    assert manual.origin == "manual"
+
+
+def test_origin_defaults_to_document(db_session):
+    user = _make_user(db_session)
+    profile = Profile(user_id=user.id)
+    db_session.add(profile)
+    db_session.flush()
+    doc = _make_document(db_session, user)
+
+    field = ProfileField(
+        profile_id=profile.id,
+        source_doc_id=doc.id,
+        field_name="full_name",
+        value_encrypted=b"cipher",
+        confidence=0.9,
+        confidence_band="high",
+        high_stakes=False,
+        status="confirmed",
+    )
+    db_session.add(field)
+    db_session.commit()
+
+    db_session.refresh(field)
+    assert field.origin == "document"
+
+
+def test_multiple_manual_candidates_for_same_field_allowed(db_session):
+    # NULL source_doc_id makes each row distinct under the unique constraint —
+    # multiple hand-typed corrections for the same field_name don't collide.
+    user = _make_user(db_session)
+    profile = Profile(user_id=user.id)
+    db_session.add(profile)
+    db_session.flush()
+
+    for i in range(2):
+        db_session.add(
+            ProfileField(
+                profile_id=profile.id,
+                source_doc_id=None,
+                origin="manual",
+                field_name="father_name",
+                value_encrypted=f"cipher-{i}".encode(),
+                confidence=1.0,
+                confidence_band="high",
+                high_stakes=False,
+                status="user_corrected",
+            )
+        )
+    db_session.commit()
+
+    rows = db_session.query(ProfileField).filter_by(profile_id=profile.id, field_name="father_name").all()
+    assert len(rows) == 2

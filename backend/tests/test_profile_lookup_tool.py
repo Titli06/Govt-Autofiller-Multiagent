@@ -12,7 +12,9 @@ from app.agent.tools.profile_lookup_tool import CandidateView, apply_format, loo
 _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _candidate(value="Ravi Kumar", confidence=0.9, status="confirmed", created_at=None, doc="doc-1"):
+def _candidate(
+    value="Ravi Kumar", confidence=0.9, status="confirmed", created_at=None, doc="doc-1", snippet=None
+):
     return CandidateView(
         profile_field_id=f"pf-{value}",
         source_doc_id=doc,
@@ -21,6 +23,7 @@ def _candidate(value="Ravi Kumar", confidence=0.9, status="confirmed", created_a
         confidence=confidence,
         status=status,
         created_at=created_at or _NOW,
+        source_snippet=snippet,
     )
 
 
@@ -70,6 +73,7 @@ def test_no_mapping_when_profile_key_is_null():
     [result] = lookup([spec], snapshot={})
     assert result["value"] is None
     assert result["missing"] == "no_mapping"
+    assert result["candidate_snippet"] is None
 
 
 def test_no_candidate_when_profile_has_no_value_for_key():
@@ -77,6 +81,21 @@ def test_no_candidate_when_profile_has_no_value_for_key():
     [result] = lookup([spec], snapshot={})
     assert result["value"] is None
     assert result["missing"] == "no_candidate"
+    assert result["candidate_snippet"] is None
+
+
+def test_candidate_snippet_carried_through_for_verification():
+    spec = TemplateField(name="applicant_name", profile_key="full_name", high_stakes=False)
+    snapshot = {"full_name": [_candidate("Ravi Kumar", snippet="Name: Ravi Kumar")]}
+    [result] = lookup([spec], snapshot)
+    assert result["candidate_snippet"] == "Name: Ravi Kumar"
+
+
+def test_candidate_snippet_none_when_candidate_has_no_snippet():
+    spec = TemplateField(name="applicant_name", profile_key="full_name", high_stakes=False)
+    snapshot = {"full_name": [_candidate("Ravi Kumar")]}
+    [result] = lookup([spec], snapshot)
+    assert result["candidate_snippet"] is None
 
 
 def test_single_candidate_fills_directly():

@@ -29,12 +29,16 @@ class CandidateView:
     """One profile candidate for a canonical field, decrypted and ready to fill with."""
 
     profile_field_id: str
-    source_doc_id: str
+    source_doc_id: str | None  # None for a manual candidate (Phase 3 Decision 11)
     doc_type: str
     value: str
     confidence: float
     status: str
     created_at: datetime
+    # Decrypted verbatim source snippet, carried forward so document_verification_tool
+    # can re-ground the formatted value without touching the DB/crypto (Phase 3 §3.1).
+    # None for a candidate with no stored snippet (e.g. a manual write-back).
+    source_snippet: str | None = None
 
 
 # profile_key -> every candidate the profile has for it (built by fill_form_task).
@@ -80,6 +84,7 @@ def _missing(spec: TemplateField, reason: str) -> dict[str, Any]:
         "transformed": False,
         "candidate_confidence": None,
         "candidate_status": None,
+        "candidate_snippet": None,
         "missing": reason,
     }
 
@@ -109,6 +114,7 @@ def lookup(field_specs: list[TemplateField], snapshot: ProfileSnapshot) -> list[
                 "transformed": transformed,
                 "candidate_confidence": chosen.confidence,
                 "candidate_status": chosen.status,
+                "candidate_snippet": chosen.source_snippet,
                 "missing": None,
             }
         )
