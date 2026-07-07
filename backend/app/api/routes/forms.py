@@ -6,6 +6,15 @@ the form to an external portal.
 Phase 2 implemented upload + read-only draft retrieval only. Phase 3 (SPEC-PHASE3.md
 §8) adds the review projection/action endpoints, the gated download, and the
 side-by-side blank-form file endpoint.
+
+Phase 4 (SPEC-PHASE4.md §8) relaxes the upload gate to accept any non-empty
+form_type — an unknown one now triggers schema inference downstream rather than a
+422. `_effective_form_type` resolves which form_type a TEMPLATE lookup (display name,
+render) should use: normally the form's own declared_form_type, but when Decision 2's
+confident-detection override fired (an unseen declared label the vision-LLM
+confidently recognized as a known type), that's `detected_form_type`, not the raw
+declared string — the declared string was never a real template and load_template
+would raise for it.
 """
 
 from __future__ import annotations
@@ -18,7 +27,7 @@ from fastapi import Form as FormBody
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.agent.tools.form_schema_tool import known_types, load_template
+from app.agent.tools.form_schema_tool import TemplateError, known_types, load_template
 from app.api.deps import get_current_user, get_db
 from app.config import settings
 from app.core.encryption import build_aad, decrypt_field, encrypt_field, mask_for
@@ -95,6 +104,23 @@ def _get_owned_form(form_id: uuid.UUID, db: Session, user: User) -> Form:
     return form
 
 
+def _effective_form_type(form: Form) -> str:
+    """The form_type a TEMPLATE lookup should use (SPEC-PHASE4.md Decision 2): the
+    form's own declared_form_type, UNLESS a confident-detection override fired for an
+    originally-unseen declared label — in which case the resolved type is the
+    detected known type, not the (never-a-real-template) declared string."""
+    if form.schema_source == "template" and form.detected_form_type in known_types():
+        return form.detected_form_type
+    return form.declared_form_type
+
+
+def _display_name(form: Form) -> str:
+    try:
+        return load_template(_effective_form_type(form)).display_name
+    except Exception:
+        return form.declared_form_type
+
+
 @router.post("/upload", response_model=FormUploadResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_form(
     file: UploadFile = File(...),
@@ -102,8 +128,12 @@ async def upload_form(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> FormUploadResponse:
-    if form_type not in known_types():
-        raise _err(status.HTTP_422_UNPROCESSABLE_ENTITY, "Unknown form type", "UNKNOWN_FORM_TYPE")
+    form_type = form_type.strip()
+    if not form_type:
+        raise _err(status.HTTP_422_UNPROCESSABLE_ENTITY, "Form type is required", "MISSING_FORM_TYPE")
+    form_type = form_type[:64]
+    # No registry-membership check (SPEC-PHASE4.md Decision 4) — a type not in the
+    # template registry now triggers schema inference downstream instead of a 422.
 
     content_type = file.content_type or ""
     if content_type not in settings.allowed_upload_content_types:
@@ -146,11 +176,7 @@ def get_form(
     user: User = Depends(get_current_user),
 ) -> FormOut:
     form = _get_owned_form(form_id, db, user)
-
-    try:
-        display_name = load_template(form.declared_form_type).display_name
-    except Exception:
-        display_name = form.declared_form_type
+    display_name = _display_name(form)
 
     fields: list[FormFieldOut] = []
     if form.status in _FIELDS_VISIBLE_STATUSES:
@@ -168,6 +194,7 @@ def get_form(
         display_name=display_name,
         detected_form_type=form.detected_form_type,
         status=form.status,
+        schema_source=form.schema_source,
         fill_error=form.fill_error,
         page_count=form.page_count,
         created_at=form.created_at,
@@ -248,11 +275,7 @@ def get_form_review(
     user: User = Depends(get_current_user),
 ) -> FormReviewOut:
     form = _get_owned_form(form_id, db, user)
-
-    try:
-        display_name = load_template(form.declared_form_type).display_name
-    except Exception:
-        display_name = form.declared_form_type
+    display_name = _display_name(form)
 
     rows = db.query(FormField).filter(FormField.form_id == form.id).all()
     docs = _docs_by_id(db, rows)
@@ -267,6 +290,7 @@ def get_form_review(
         form_type=form.declared_form_type,
         display_name=display_name,
         status=form.status,
+        schema_source=form.schema_source,
         download_ready=form.status == "approved",
         total_fields=len(fields),
         outstanding_fields=outstanding,
@@ -445,14 +469,18 @@ def download_form(
             if effective is not None:
                 aad = build_aad(form.id, row.field_name)
                 value = decrypt_field(effective, aad=aad)
-            render_fields.append(RenderField(field_name=row.field_name, value=value))
+            render_fields.append(RenderField(field_name=row.field_name, value=value, placement=row.placement))
 
         blank_bytes = get_document(form.s3_key)
         try:
             pdf_bytes = render(
-                form.declared_form_type, render_fields, blank_bytes, form.content_type or "application/pdf"
+                _effective_form_type(form),
+                render_fields,
+                blank_bytes,
+                form.content_type or "application/pdf",
+                schema_source=form.schema_source,
             )
-        except RenderError:
+        except (RenderError, TemplateError):
             logger.error("form_download render_failed form_id=%s", form.id)
             raise _err(
                 status.HTTP_500_INTERNAL_SERVER_ERROR, "Could not render the form", "RENDER_FAILED"

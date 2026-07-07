@@ -90,9 +90,24 @@ class Settings(BaseSettings):
     # Input-quality guard (Phase 3) — coordinate placement assumes a flat, upright scan.
     skew_warn_degrees: float = 5.0
 
-    # Document AI field-detection fallback (Phase 4-activated — unused in Phase 3)
+    # Document AI Form Parser (Phase 4) — field-detection fallback for template-less
+    # (inferred-schema) forms. Service-account auth (GOOGLE_APPLICATION_CREDENTIALS),
+    # NOT the Gemini API key.
     documentai_location: str = "us"
     documentai_processor_id: str = ""
+    documentai_project_id: str = ""
+    # Below this detection confidence (or no value region), a field's box is dropped
+    # (placement=None) and it lands on the renderer's appended "Additional fields" page
+    # instead of risking a misplaced value (SPEC-PHASE4.md Decision 8).
+    documentai_min_confidence: float = 0.5
+
+    # Schema inference (Phase 4) — discrete label-mapping tiers -> fixed confidence
+    # caps (Decision 3). NOT a raw self-reported LLM float (CLAUDE.md). An inferred
+    # field's final confidence is min(scorer_confidence, tier_cap), so it can never
+    # present as "high" band.
+    map_cap_exact: float = 0.85
+    map_cap_strong: float = 0.70
+    map_cap_weak: float = 0.50
 
 
 settings = Settings()

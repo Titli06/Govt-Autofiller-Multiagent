@@ -1,5 +1,6 @@
-// Form Fill page: upload a blank form the system has a template for (UC2). Kicks off
-// the async LangGraph fill job and polls its status until terminal. On success
+// Form Fill page: upload a blank form the system has a template for (UC2), or one it
+// doesn't (UC3/Phase 4 — schema inference) via the "Other / not listed" option. Kicks
+// off the async LangGraph fill job and polls its status until terminal. On success
 // (in_review or approved — "filled" is retired as of Phase 3) it routes straight to
 // the Review page, which is where fields, confidence, and download actually live.
 // This page only handles upload + polling + the type_mismatch/failed error states.
@@ -20,9 +21,14 @@ const FORM_TYPE_LABELS: Record<FormType, string> = {
   scholarship_application: "Scholarship Application",
 };
 
+// Sentinel for the "Other / not listed" option (Phase 4, SPEC-PHASE4.md §9) — never
+// sent to the API itself; the free-text input's value is sent as form_type instead.
+const OTHER_FORM_TYPE = "__other__";
+
 export default function FormFill() {
   const navigate = useNavigate();
-  const [formType, setFormType] = useState<FormType>("income_certificate");
+  const [formType, setFormType] = useState<string>("income_certificate");
+  const [customFormType, setCustomFormType] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [form, setForm] = useState<FormOut | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -50,16 +56,19 @@ export default function FormFill() {
     [navigate],
   );
 
+  const isOther = formType === OTHER_FORM_TYPE;
+  const effectiveFormType = isOther ? customFormType.trim() : formType;
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!file) return;
+    if (!file || !effectiveFormType) return;
     if (pollTimer.current) clearTimeout(pollTimer.current);
     setError(null);
     setForm(null);
     setSubmitting(true);
     pollCount.current = 0;
     try {
-      const upload = await api.uploadForm(file, formType);
+      const upload = await api.uploadForm(file, effectiveFormType);
       void poll(upload.form_id);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Upload failed");
@@ -74,18 +83,31 @@ export default function FormFill() {
       <form onSubmit={(e) => void onSubmit(e)}>
         <div className="field">
           <label htmlFor="form-type">Form type</label>
-          <select
-            id="form-type"
-            value={formType}
-            onChange={(e) => setFormType(e.target.value as FormType)}
-          >
+          <select id="form-type" value={formType} onChange={(e) => setFormType(e.target.value)}>
             {Object.entries(FORM_TYPE_LABELS).map(([value, label]) => (
               <option key={value} value={value}>
                 {label}
               </option>
             ))}
+            <option value={OTHER_FORM_TYPE}>Other / not listed</option>
           </select>
         </div>
+        {isOther && (
+          <div className="field">
+            <label htmlFor="custom-form-type">What form is this?</label>
+            <input
+              id="custom-form-type"
+              value={customFormType}
+              onChange={(e) => setCustomFormType(e.target.value)}
+              placeholder="e.g. Marriage Certificate"
+              maxLength={64}
+            />
+            <p className="notice">
+              We haven't seen this form before — we'll detect its fields automatically and
+              you'll review every one before it's ready to download.
+            </p>
+          </div>
+        )}
         <div className="field">
           <label htmlFor="form-file">Blank form image or PDF</label>
           <input
@@ -97,7 +119,7 @@ export default function FormFill() {
           />
         </div>
         {error && <p className="error">{error}</p>}
-        <button type="submit" disabled={!file || submitting}>
+        <button type="submit" disabled={!file || !effectiveFormType || submitting}>
           {submitting ? "Uploading…" : "Upload"}
         </button>
       </form>

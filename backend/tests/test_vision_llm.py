@@ -186,3 +186,43 @@ def test_classify_form_bad_request_is_terminal():
         with pytest.raises(vision_llm.VisionExtractionError) as exc_info:
             vision_llm.classify_form([b"img"], ["income_certificate"])
     assert exc_info.value.transient is False
+
+
+# --- map_field_labels (Phase 4) --------------------------------------------------------
+
+
+def test_map_field_labels_returns_per_label_tier_dict():
+    payload = {
+        "mappings": {
+            "Father's Name": {"profile_key": "father_name", "tier": "exact"},
+            "Purpose": {"profile_key": "none", "tier": "none"},
+        }
+    }
+    with patch.object(vision_llm, "_client", return_value=_fake_client(_returns(payload))):
+        result = vision_llm.map_field_labels(
+            ["Father's Name", "Purpose"], ["full_name", "father_name", "dob"]
+        )
+    assert result["Father's Name"] == {"profile_key": "father_name", "tier": "exact"}
+    assert result["Purpose"] == {"profile_key": "none", "tier": "none"}
+
+
+def test_map_field_labels_missing_mappings_key_returns_empty_dict():
+    with patch.object(vision_llm, "_client", return_value=_fake_client(_returns({}))):
+        result = vision_llm.map_field_labels(["Some Label"], ["full_name"])
+    assert result == {}
+
+
+def test_map_field_labels_server_error_is_transient():
+    client = _fake_client(_raises(_api_error(errors.ServerError, 500)))
+    with patch.object(vision_llm, "_client", return_value=client):
+        with pytest.raises(vision_llm.VisionExtractionError) as exc_info:
+            vision_llm.map_field_labels(["Label"], ["full_name"])
+    assert exc_info.value.transient is True
+
+
+def test_map_field_labels_bad_request_is_terminal():
+    client = _fake_client(_raises(_api_error(errors.ClientError, 400)))
+    with patch.object(vision_llm, "_client", return_value=client):
+        with pytest.raises(vision_llm.VisionExtractionError) as exc_info:
+            vision_llm.map_field_labels(["Label"], ["full_name"])
+    assert exc_info.value.transient is False

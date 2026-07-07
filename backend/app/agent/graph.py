@@ -16,11 +16,23 @@ a miss (SPEC-PHASE3.md §3) — before confidence_scorer prices the result. Fiel
 placement/rendering is NOT a graph concern; it happens deterministically at download
 time from the template (services/form_renderer.py).
 
+Phase 4 (SPEC-PHASE4.md §6.2): `form_schema` grows a template-vs-inference branch.
+declared type known -> the Phase 2/3 template path, unchanged (only a CONFIDENT
+DIFFERENT known type is a type_mismatch). declared type unseen but classify_form
+CONFIDENTLY recognizes a known type -> adopt that template (Decision 2; not a
+mismatch). Otherwise -> genuinely unrecognized: infer the schema via Document AI
+field detection + LLM semantic label mapping (field_mapping_tool), producing the
+same TemplateField-shaped specs the template path emits, so profile_lookup ->
+document_verification -> confidence_scorer consume them identically. profile_lookup
+additionally stamps `inferred` (from state["schema_source"]) on every field dict —
+confidence_scorer_tool needs it even for a no_mapping inferred field, which has no
+mapping_cap of its own (SPEC-PHASE4.md §6.6).
+
 Nodes are pure over (state, config): every external input (the decrypted profile
-snapshot, the form's page images, the form classifier callable, and the document
-verifier callable) is injected via config["configurable"] by the caller
-(fill_form_task), so the graph is testable with fakes — no DB access, no real
-vision-LLM call.
+snapshot, the form's page images, the form classifier callable, the document
+verifier callable, and — Phase 4 — the field detector and label mapper callables) is
+injected via config["configurable"] by the caller (fill_form_task), so the graph is
+testable with fakes — no DB access, no real vision-LLM/Document AI call.
 """
 
 from __future__ import annotations
@@ -31,20 +43,65 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 
 from app.agent.state import AgentState
-from app.agent.tools import confidence_scorer_tool, document_verification_tool, profile_lookup_tool
+from app.agent.tools import (
+    confidence_scorer_tool,
+    document_verification_tool,
+    field_mapping_tool,
+    profile_lookup_tool,
+)
 from app.agent.tools.form_schema_tool import known_types, load_template, resolve_form_type
 
 
 def _form_schema_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     cfg = config["configurable"]
-    template = load_template(state["declared_form_type"])
+    declared = state["declared_form_type"]
+    known = set(known_types())
     detected = cfg["classifier"](cfg["images"], known_types())
-    resolved_type, mismatch = resolve_form_type(state["declared_form_type"], detected)
+
+    if declared in known:
+        # Phase 2/3 behavior, unchanged: only a CONFIDENT DIFFERENT known type blocks.
+        resolved_type, mismatch = resolve_form_type(declared, detected)
+        if mismatch:
+            return {
+                "form_type": resolved_type,
+                "detected_form_type": detected,
+                "type_mismatch": True,
+                "schema_source": "template",
+                "field_specs": [],
+            }
+        template = load_template(resolved_type)
+        return {
+            "form_type": resolved_type,
+            "detected_form_type": detected,
+            "type_mismatch": False,
+            "schema_source": "template",
+            "field_specs": template.required_fields,
+        }
+
+    if detected in known:
+        # Decision 2: a confident detection of a KNOWN type overrides an unseen
+        # declared label — adopt the template (better placement + hand-authored
+        # high_stakes) rather than inferring a form we already have. This is NOT a
+        # type_mismatch: the user didn't declare a *conflicting known* type.
+        template = load_template(detected)
+        return {
+            "form_type": detected,
+            "detected_form_type": detected,
+            "type_mismatch": False,
+            "schema_source": "template",
+            "field_specs": template.required_fields,
+        }
+
+    # Genuinely unrecognized (Decision 1): infer the schema via Document AI field
+    # detection + LLM semantic label mapping.
+    detected_fields = cfg["field_detector"](cfg["images"])
+    field_specs = field_mapping_tool.infer_schema(detected_fields, cfg["label_mapper"])
     return {
-        "form_type": resolved_type,
+        "form_type": declared,
         "detected_form_type": detected,
-        "type_mismatch": mismatch,
-        "field_specs": [] if mismatch else template.required_fields,
+        "type_mismatch": False,
+        "schema_source": "inferred",
+        "field_specs": field_specs,
     }
 
 
@@ -54,7 +111,11 @@ def _route_after_schema(state: AgentState) -> str:
 
 def _profile_lookup_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     snapshot = config["configurable"]["snapshot"]
-    return {"fields": profile_lookup_tool.lookup(state["field_specs"], snapshot)}
+    inferred = state["schema_source"] == "inferred"
+    fields = profile_lookup_tool.lookup(state["field_specs"], snapshot)
+    for f in fields:
+        f["inferred"] = inferred
+    return {"fields": fields}
 
 
 def _document_verification_node(state: AgentState, config: RunnableConfig) -> dict[str, Any]:

@@ -71,11 +71,20 @@ def test_upload_success_enqueues_task(client, sent_emails, _mock_storage_and_tas
     _mock_storage_and_task.assert_called_once_with(body["form_id"])
 
 
-def test_upload_unknown_form_type_rejected(client, sent_emails):
+def test_upload_unknown_form_type_now_accepted_triggers_inference(client, sent_emails, _mock_storage_and_task):
+    """Phase 4 (SPEC-PHASE4.md Decision 4): a form_type not in the template registry
+    is no longer a 422 — it's accepted and routed to schema inference downstream."""
     headers = _register_and_login(client, sent_emails)
     r = _upload(client, headers, form_type="passport_renewal")
+    assert r.status_code == 202
+    assert r.json()["status"] == "pending"
+
+
+def test_upload_empty_form_type_rejected(client, sent_emails):
+    headers = _register_and_login(client, sent_emails)
+    r = _upload(client, headers, form_type="   ")
     assert r.status_code == 422
-    assert r.json()["detail"]["code"] == "UNKNOWN_FORM_TYPE"
+    assert r.json()["detail"]["code"] == "MISSING_FORM_TYPE"
 
 
 def test_upload_unsupported_content_type_rejected(client, sent_emails):
@@ -618,7 +627,7 @@ def test_download_renders_caches_and_streams_pdf(client, sent_emails, db_session
 
     render_calls = []
 
-    def fake_render(form_type, fields, blank_bytes, content_type):
+    def fake_render(form_type, fields, blank_bytes, content_type, schema_source="template"):
         render_calls.append(form_type)
         return b"%PDF-fake-bytes%"
 
@@ -660,3 +669,110 @@ def test_get_form_file_cross_user_404(client, sent_emails):
     headers_b = _register_and_login(client, sent_emails, email="fb@example.com")
     r = client.get(f"/api/forms/{form_id}/file", headers=headers_b)
     assert r.status_code == 404
+
+
+# --- Phase 4: schema_source surfacing + confident-override/inferred render paths -----
+
+
+def test_get_form_surfaces_schema_source(client, sent_emails):
+    headers = _register_and_login(client, sent_emails)
+    upload = _upload(client, headers)
+    form_id = upload.json()["form_id"]
+
+    r = client.get(f"/api/forms/{form_id}", headers=headers)
+    assert r.json()["schema_source"] == "template"
+
+
+def test_get_review_surfaces_schema_source(client, sent_emails, db_session):
+    headers = _register_and_login(client, sent_emails)
+    upload = _upload(client, headers)
+    form_id = upload.json()["form_id"]
+    _seed_reviewable_form(db_session, form_id)
+
+    r = client.get(f"/api/forms/{form_id}/review", headers=headers)
+    assert r.json()["schema_source"] == "template"
+
+
+def test_download_confident_override_renders_with_detected_template_not_declared_string(
+    client, sent_emails, db_session, monkeypatch
+):
+    """Decision 2 regression: a form declared as an unseen label but filled from a
+    confidently-DETECTED known template must render using that detected type, not
+    the (never-a-real-template) declared string — otherwise load_template would
+    raise inside render()."""
+    headers = _register_and_login(client, sent_emails)
+    upload = _upload(client, headers, form_type="marriage_certificate")
+    form_id = upload.json()["form_id"]
+    form, _ = _seed_reviewable_form(db_session, form_id, status="approved")
+    form.declared_form_type = "marriage_certificate"
+    form.detected_form_type = "income_certificate"
+    form.schema_source = "template"
+    for f in db_session.query(FormField).filter_by(form_id=form.id).all():
+        f.reviewed = True
+    db_session.commit()
+
+    render_calls = []
+
+    def fake_render(form_type, fields, blank_bytes, content_type, schema_source="template"):
+        render_calls.append((form_type, schema_source))
+        return b"%PDF-fake%"
+
+    monkeypatch.setattr("app.api.routes.forms.get_document", lambda key: b"blank-bytes")
+    monkeypatch.setattr("app.api.routes.forms.put_document", lambda user_id, data, ct: "forms/rendered.pdf")
+    monkeypatch.setattr("app.api.routes.forms.render", fake_render)
+
+    r = client.get(f"/api/forms/{form_id}/download", headers=headers)
+    assert r.status_code == 200
+    assert render_calls == [("income_certificate", "template")]
+
+
+def test_download_inferred_form_passes_schema_source_and_field_placement(
+    client, sent_emails, db_session, monkeypatch
+):
+    headers = _register_and_login(client, sent_emails)
+    upload = _upload(client, headers, form_type="marriage_certificate")
+    form_id = upload.json()["form_id"]
+    form = db_session.get(Form, uuid.UUID(form_id))
+    form.status = "approved"
+    form.detected_form_type = "unknown"
+    form.schema_source = "inferred"
+    aad = build_aad(form.id, "father_s_name")
+    db_session.add(
+        FormField(
+            form_id=form.id,
+            field_name="father_s_name",
+            profile_key="father_name",
+            value_encrypted=encrypt_field("Suresh Kumar", aad=aad),
+            confidence=0.85,
+            confidence_band="medium",
+            high_stakes=False,
+            transformed=False,
+            verified=True,
+            verification_method="exact",
+            needs_review=True,
+            review_reason="inferred_mapping",
+            reviewed=True,
+            review_action="approved",
+            placement={"page": 1, "bbox": [0.1, 0.1, 0.6, 0.15]},
+            flags={"missing": None, "verification_failed": False, "inferred_mapping": True, "high_stakes": False, "unverified_source": False, "low_confidence": False, "transformed": False},
+        )
+    )
+    db_session.commit()
+
+    captured = {}
+
+    def fake_render(form_type, fields, blank_bytes, content_type, schema_source="template"):
+        captured["form_type"] = form_type
+        captured["schema_source"] = schema_source
+        captured["placements"] = {f.field_name: f.placement for f in fields}
+        return b"%PDF-fake%"
+
+    monkeypatch.setattr("app.api.routes.forms.get_document", lambda key: b"blank-bytes")
+    monkeypatch.setattr("app.api.routes.forms.put_document", lambda user_id, data, ct: "forms/rendered.pdf")
+    monkeypatch.setattr("app.api.routes.forms.render", fake_render)
+
+    r = client.get(f"/api/forms/{form_id}/download", headers=headers)
+    assert r.status_code == 200
+    assert captured["form_type"] == "marriage_certificate"  # declared string — no override applies
+    assert captured["schema_source"] == "inferred"
+    assert captured["placements"]["father_s_name"] == {"page": 1, "bbox": [0.1, 0.1, 0.6, 0.15]}

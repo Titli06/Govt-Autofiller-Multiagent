@@ -2,7 +2,12 @@
 snapshot (now carrying source snippets), and a stub verifier — no DB, no real
 vision-LLM call. Exercises the full node order (form_schema -> profile_lookup ->
 document_verification -> confidence_scorer) and the type_mismatch short-circuit
-(SPEC-PHASE3.md §6.2)."""
+(SPEC-PHASE3.md §6.2).
+
+Phase 4 (SPEC-PHASE4.md §6.2/§12): also exercises the template-vs-inference branch —
+a confident classify_form detection of a known type overrides an unseen declared
+label (Decision 2); a genuinely unrecognized form infers its schema via stub
+field_detector/label_mapper callables."""
 
 from __future__ import annotations
 
@@ -10,6 +15,8 @@ from datetime import datetime, timezone
 
 from app.agent.graph import build_graph
 from app.agent.tools.profile_lookup_tool import CandidateView
+from app.config import settings
+from app.services.form_placement.document_ai import DetectedField
 
 _NOW = datetime.now(timezone.utc)
 
@@ -41,7 +48,22 @@ def _always_verified(value: str, source_doc_id: str | None) -> bool:
     return True
 
 
-def _invoke(declared_form_type, classifier, snapshot=None, verifier=_always_verified):
+def _no_field_detector(images):
+    raise AssertionError("field_detector should not be called on the template path")
+
+
+def _no_label_mapper(labels, canonical_keys):
+    raise AssertionError("label_mapper should not be called on the template path")
+
+
+def _invoke(
+    declared_form_type,
+    classifier,
+    snapshot=None,
+    verifier=_always_verified,
+    field_detector=_no_field_detector,
+    label_mapper=_no_label_mapper,
+):
     graph = build_graph()
     return graph.invoke(
         {
@@ -51,6 +73,7 @@ def _invoke(declared_form_type, classifier, snapshot=None, verifier=_always_veri
             "detected_form_type": None,
             "type_mismatch": False,
             "form_type": None,
+            "schema_source": "template",
             "field_specs": [],
             "fields": [],
         },
@@ -60,6 +83,8 @@ def _invoke(declared_form_type, classifier, snapshot=None, verifier=_always_veri
                 "images": [b"page"],
                 "classifier": classifier,
                 "verifier": verifier,
+                "field_detector": field_detector,
+                "label_mapper": label_mapper,
             }
         },
     )
@@ -178,3 +203,65 @@ def test_no_profile_snapshot_all_fields_missing():
     assert all(f["value"] is None for f in result["fields"])
     assert all(f["needs_review"] for f in result["fields"])
     assert all(f["verified"] is False for f in result["fields"])
+
+
+# --- Phase 4: schema inference for unseen forms (SPEC-PHASE4.md §6.2, Decisions 1/2) ---
+
+
+def test_confident_detection_of_known_type_overrides_unseen_declared_label():
+    """Decision 2: an unseen declared label the vision-LLM confidently recognizes as
+    a known type is filled from the TEMPLATE, not inferred — and it's not a
+    type_mismatch (the field_detector/label_mapper must never even be called)."""
+    result = _invoke(
+        "passport_renewal",  # not in the template registry
+        lambda images, known: "income_certificate",
+        snapshot={},
+    )
+    assert result["type_mismatch"] is False
+    assert result["schema_source"] == "template"
+    assert result["form_type"] == "income_certificate"
+    field_names = {f["field_name"] for f in result["fields"]}
+    assert "applicant_name" in field_names
+
+
+def test_unrecognized_declared_type_infers_schema_via_document_ai_and_label_mapper():
+    detected_fields = [
+        DetectedField(name="Father's Name", page=1, value_bbox=(0.1, 0.2, 0.4, 0.25), confidence=0.9),
+        DetectedField(name="Purpose", page=1, value_bbox=(0.1, 0.3, 0.4, 0.35), confidence=0.9),
+    ]
+    mapping = {
+        "Father's Name": {"profile_key": "father_name", "tier": "exact"},
+        "Purpose": {"profile_key": None, "tier": "none"},
+    }
+    snapshot = {
+        "father_name": [
+            CandidateView(
+                "pf-1", "doc-1", "aadhaar", "Suresh Kumar", 0.9, "confirmed", _NOW,
+                source_snippet="Father: Suresh Kumar",
+            )
+        ]
+    }
+
+    result = _invoke(
+        "marriage_certificate",  # not in the template registry
+        lambda images, known: "unknown",
+        snapshot=snapshot,
+        field_detector=lambda images: detected_fields,
+        label_mapper=lambda labels, keys: mapping,
+    )
+
+    assert result["type_mismatch"] is False
+    assert result["schema_source"] == "inferred"
+    assert result["form_type"] == "marriage_certificate"
+
+    by_name = {f["field_name"]: f for f in result["fields"]}
+    father = by_name["father_s_name"]
+    assert father["value"] == "Suresh Kumar"
+    assert father["verified"] is True  # exact snippet match
+    assert father["confidence"] == settings.map_cap_exact  # tier-capped, not promoted to high
+    assert father["needs_review"] is True  # ALWAYS reviewed on an inferred form (Decision 1)
+    assert father["review_reason"] == "inferred_mapping"
+
+    purpose = by_name["purpose"]
+    assert purpose["value"] is None
+    assert purpose["review_reason"] == "no_mapping"  # missing still wins over inferred_mapping

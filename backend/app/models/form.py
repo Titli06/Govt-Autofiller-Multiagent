@@ -57,6 +57,10 @@ class Form(Base):
     # Safe, non-PII advisory when the scan is significantly skewed (coordinate
     # placement may be off); NULL when upright or on the AcroForm path (Decision 15).
     placement_warning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "template" (a registry template drove the fill, incl. a confident-detection
+    # override) | "inferred" (Document AI + semantic mapping, Phase 4). Read by the
+    # renderer and the schema-inference-success-rate metric (Phase 6).
+    schema_source: Mapped[str] = mapped_column(String(16), nullable=False, default="template")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -114,9 +118,15 @@ class FormField(Base):
     # approved | corrected | approved_blank | null (unreviewed)
     review_action: Mapped[str | None] = mapped_column(String(16), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Full audit of every trigger considered: {missing, verification_failed, high_stakes,
-    # unverified_source, low_confidence, transformed}. review_reason is the top-precedence one.
+    # Full audit of every trigger considered: {missing, verification_failed,
+    # inferred_mapping, high_stakes, unverified_source, low_confidence, transformed}.
+    # review_reason is the top-precedence one.
     flags: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Per-field normalized placement for an INFERRED field only (Phase 4):
+    # {"page": int, "bbox": [x0, y0, x1, y1]} in 0-1 page fractions. NULL for template
+    # fields (the renderer uses the template JSON) and for an inferred field whose box
+    # was undetected/low-confidence (-> appended "Additional fields" page).
+    placement: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

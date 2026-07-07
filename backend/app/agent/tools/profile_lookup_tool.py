@@ -3,11 +3,20 @@
 Deterministic mapping via each template field's profile_key (SPEC-PHASE2.md Decision 2):
 known templates already declare which canonical profile field backs each form field, so
 this tool just selects the best candidate and reformats it. Semantic (LLM) matching for
-unlabeled/inferred forms is Phase 4.
+an inferred (unlabeled) schema is NOT done here — that's agent/tools/field_mapping_tool.py
+(SPEC-PHASE4.md §3); this tool stays exact/deterministic regardless of schema_source,
+since an inferred spec already carries its own profile_key by the time it reaches here.
 
 Pure over an already-decrypted ProfileSnapshot — no DB access, no crypto — so it's
 testable with fakes. fill_form_task builds the snapshot and hands it in via LangGraph's
 invocation config.
+
+Phase 4 (SPEC-PHASE4.md §6.1): each lookup dict also carries a spec's
+`mapping_tier`/`mapping_cap`/`placement` straight through (None for every template
+field — only field_mapping_tool.infer_schema sets them on a synthesized inferred
+spec). The `inferred` boolean itself is stamped by the graph's profile_lookup node
+(not here), since it needs `state["schema_source"]`, which this pure function never
+sees.
 """
 
 from __future__ import annotations
@@ -86,6 +95,9 @@ def _missing(spec: TemplateField, reason: str) -> dict[str, Any]:
         "candidate_status": None,
         "candidate_snippet": None,
         "missing": reason,
+        "mapping_tier": spec.mapping_tier,
+        "mapping_cap": spec.mapping_cap,
+        "placement": spec.placement,
     }
 
 
@@ -116,6 +128,9 @@ def lookup(field_specs: list[TemplateField], snapshot: ProfileSnapshot) -> list[
                 "candidate_status": chosen.status,
                 "candidate_snippet": chosen.source_snippet,
                 "missing": None,
+                "mapping_tier": spec.mapping_tier,
+                "mapping_cap": spec.mapping_cap,
+                "placement": spec.placement,
             }
         )
     return results

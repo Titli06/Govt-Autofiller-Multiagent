@@ -13,6 +13,17 @@ join; a best-effort OpenCV skew check runs on the uploaded blank form; a `verifi
 closure is injected into the graph for the document_verification node's LLM-escalation
 path; and the terminal status is `in_review` (any field outstanding) or `approved`
 (none) instead of `filled`, which is retired.
+
+Phase 4 (SPEC-PHASE4.md §6.7) extends fill_form_task further: `field_detector`
+(Document AI) and `label_mapper` (Gemini semantic label mapping) callables are
+injected into the graph config alongside `classifier`/`verifier`, for the
+form_schema node's template-vs-inference branch. `DocumentAIError` is caught
+alongside `VisionExtractionError` with the same transient/terminal retry split. An
+inferred schema that detects ZERO usable fields fails the form (never a vacuous
+`approved`) rather than landing on an empty draft. `Form.schema_source` is persisted,
+and each field's `placement` (normalized bbox) is persisted onto `FormField.placement`
+— but ONLY for an inferred form; a template form's placement lives in its template
+JSON, not on the row.
 """
 
 from __future__ import annotations
@@ -36,8 +47,14 @@ from app.models.document import Document
 from app.models.form import Form, FormField
 from app.models.profile import Profile, ProfileField
 from app.services.extraction import GroundedField, extract_profile_fields
+from app.services.form_placement.document_ai import DocumentAIError, detect_fields
 from app.services.image_quality import estimate_skew
-from app.services.ocr.vision_llm import VisionExtractionError, classify_form, verify_value_on_document
+from app.services.ocr.vision_llm import (
+    VisionExtractionError,
+    classify_form,
+    map_field_labels,
+    verify_value_on_document,
+)
 from app.services.preprocessing import PreprocessingError, preprocess
 from app.services.storage import get_document
 from app.workers.celery_app import celery_app
@@ -228,6 +245,7 @@ def _run_fill(task, db: Session, form_id: str) -> None:
                 "detected_form_type": None,
                 "type_mismatch": False,
                 "form_type": None,
+                "schema_source": "template",
                 "field_specs": [],
                 "fields": [],
             },
@@ -237,17 +255,19 @@ def _run_fill(task, db: Session, form_id: str) -> None:
                     "images": images,
                     "classifier": classify_form,
                     "verifier": verifier,
+                    "field_detector": detect_fields,
+                    "label_mapper": map_field_labels,
                 }
             },
         )
     except TemplateError:
         _fail_form(form, db, "unsupported form type")
         return
-    except VisionExtractionError as exc:
+    except (VisionExtractionError, DocumentAIError) as exc:
         if exc.transient:
-            _retry_or_fail_form(task, form, db, "vision-LLM call temporarily unavailable")
+            _retry_or_fail_form(task, form, db, "vision-LLM/Document AI call temporarily unavailable")
         else:
-            _fail_form(form, db, "form classification or verification failed")
+            _fail_form(form, db, "form classification, mapping, or verification failed")
         return
     except Exception:
         _retry_or_fail_form(task, form, db, "transient fill error")
@@ -263,11 +283,23 @@ def _run_fill(task, db: Session, form_id: str) -> None:
         logger.info("fill_form_task type_mismatch form_id=%s", form_id)
         return
 
+    if result["schema_source"] == "inferred" and not result["fields"]:
+        # Decision 5 (SPEC-PHASE4.md §2): zero detected fields is a genuine failure,
+        # never a vacuous "approved" empty draft.
+        _fail_form(form, db, "could not detect any fields on this form")
+        return
+
+    form.schema_source = result["schema_source"]
     any_outstanding = _persist_form_fields(db, form, result["fields"])
     form.status = "in_review" if any_outstanding else "approved"
     form.filled_at = _now()
     db.commit()
-    logger.info("fill_form_task done form_id=%s status=%s", form_id, form.status)
+    logger.info(
+        "fill_form_task done form_id=%s status=%s schema_source=%s",
+        form_id,
+        form.status,
+        form.schema_source,
+    )
 
 
 def _retry_or_fail_form(task, form: Form, db: Session, reason: str) -> None:
@@ -414,6 +446,10 @@ def _persist_form_fields(db: Session, form: Form, fields: list[dict]) -> bool:
                 reviewed_at=None,
                 corrected_value_encrypted=None,
                 flags=f["flags"],
+                # Only an INFERRED form's placement is meaningful here — a template
+                # form's placement lives in its template JSON, not on the row
+                # (SPEC-PHASE4.md Decision 7).
+                placement=f.get("placement") if form.schema_source == "inferred" else None,
             )
         )
     db.commit()

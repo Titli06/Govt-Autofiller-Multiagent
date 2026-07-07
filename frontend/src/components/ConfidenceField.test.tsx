@@ -196,6 +196,19 @@ describe("ConfidenceField in review mode (FormFieldReviewOut)", () => {
     expect(screen.queryByRole("button", { name: /approve as blank/i })).toBeNull();
   });
 
+  it("shows a friendlier label for an inferred_mapping review reason", () => {
+    render(
+      <ConfidenceField
+        field={makeReviewField({ review_reason: "inferred_mapping", high_stakes: false })}
+        onApprove={vi.fn()}
+        onCorrect={vi.fn()}
+        onViewSource={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/auto-matched field/i)).toBeDefined();
+  });
+
   it("editing with showPropagateOption sends the propagate flag to onCorrect", async () => {
     const onCorrect = vi.fn().mockResolvedValue(undefined);
     render(

@@ -157,6 +157,102 @@ def test_image_upload_opens_as_single_page_pdf(monkeypatch):
     assert "Ravi Kumar" in doc[0].get_text()
 
 
+def test_schema_source_defaults_to_template_regression(monkeypatch):
+    """render() called without schema_source (as every pre-Phase-4 caller does) must
+    behave exactly as the template path always has."""
+    _use_template(monkeypatch, _coord_template())
+    fields = [RenderField(field_name="applicant_name", value="Ravi Kumar")]
+
+    out = render("test_form", fields, _pdf_bytes(), "application/pdf")
+    doc = fitz.open(stream=out, filetype="pdf")
+    assert "Ravi Kumar" in doc[0].get_text()
+
+
+# --- Phase 4: inferred-schema placement (SPEC-PHASE4.md §7) ---------------------------
+
+
+def test_inferred_places_value_at_its_own_normalized_bbox(monkeypatch):
+    fields = [
+        RenderField(
+            field_name="father_s_name",
+            value="Suresh Kumar",
+            placement={"page": 1, "bbox": [0.1, 0.1, 0.6, 0.15]},
+        )
+    ]
+
+    out = render("marriage_certificate", fields, _pdf_bytes(), "application/pdf", schema_source="inferred")
+
+    doc = fitz.open(stream=out, filetype="pdf")
+    assert doc.page_count == 1  # no unplaced fields -> no appended page
+    assert "Suresh Kumar" in doc[0].get_text()
+
+
+def test_inferred_does_not_call_load_template(monkeypatch):
+    def _boom(form_type):
+        raise AssertionError("load_template must not be called on the inferred path")
+
+    monkeypatch.setattr(form_renderer, "load_template", _boom)
+    fields = [
+        RenderField(field_name="father_s_name", value="Suresh Kumar", placement={"page": 1, "bbox": [0.1, 0.1, 0.6, 0.15]})
+    ]
+
+    out = render("marriage_certificate", fields, _pdf_bytes(), "application/pdf", schema_source="inferred")
+    assert out.startswith(b"%PDF")
+
+
+def test_inferred_field_with_no_placement_lands_on_additional_fields_page():
+    fields = [
+        RenderField(field_name="father_s_name", value="Suresh Kumar", placement={"page": 1, "bbox": [0.1, 0.1, 0.6, 0.15]}),
+        RenderField(field_name="purpose", value="Marriage registration", placement=None),
+    ]
+
+    out = render("marriage_certificate", fields, _pdf_bytes(), "application/pdf", schema_source="inferred")
+
+    doc = fitz.open(stream=out, filetype="pdf")
+    assert doc.page_count == 2
+    assert "Additional fields" in doc[1].get_text()
+    assert "Marriage registration" in doc[1].get_text()
+
+
+def test_inferred_field_missing_value_never_appears():
+    fields = [RenderField(field_name="father_s_name", value=None, placement={"page": 1, "bbox": [0.1, 0.1, 0.6, 0.15]})]
+
+    out = render("marriage_certificate", fields, _pdf_bytes(), "application/pdf", schema_source="inferred")
+
+    doc = fitz.open(stream=out, filetype="pdf")
+    assert doc.page_count == 1
+    assert "Suresh Kumar" not in doc[0].get_text()
+
+
+def test_inferred_out_of_range_page_lands_on_additional_fields_page():
+    fields = [
+        RenderField(field_name="father_s_name", value="Suresh Kumar", placement={"page": 5, "bbox": [0.1, 0.1, 0.6, 0.15]})
+    ]
+
+    out = render("marriage_certificate", fields, _pdf_bytes(), "application/pdf", schema_source="inferred")
+
+    doc = fitz.open(stream=out, filetype="pdf")
+    assert doc.page_count == 2
+    assert "Suresh Kumar" in doc[1].get_text()
+
+
+def test_inferred_bbox_scales_to_actual_page_size():
+    # A bbox normalized against ANY reference authored size scales to the actual
+    # upload page (0.5 -> the horizontal midpoint of whatever page this actually is).
+    fields = [
+        RenderField(field_name="father_s_name", value="Suresh Kumar", placement={"page": 1, "bbox": [0.5, 0.1, 0.9, 0.15]})
+    ]
+
+    out = render(
+        "marriage_certificate", fields, _pdf_bytes(size=(400, 400)), "application/pdf", schema_source="inferred"
+    )
+
+    doc = fitz.open(stream=out, filetype="pdf")
+    text_instances = doc[0].search_for("Suresh Kumar")
+    assert len(text_instances) == 1
+    assert text_instances[0].x0 == pytest.approx(200, abs=5)  # 0.5 * 400
+
+
 def test_coordinate_scaling_when_upload_page_differs_from_reference_size(monkeypatch):
     # Reference authored at 100x100; actual upload is 200x200 (2x). Placing at (10, 20)
     # should scale to (20, 40) on the real page — verified indirectly via no exception

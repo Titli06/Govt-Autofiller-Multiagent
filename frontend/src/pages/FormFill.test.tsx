@@ -22,6 +22,7 @@ const baseForm = {
   form_type: "income_certificate" as const,
   display_name: "Income Certificate",
   detected_form_type: "income_certificate",
+  schema_source: "template" as const,
   fill_error: null,
   page_count: 1,
   created_at: "2026-01-01T00:00:00Z",
@@ -109,6 +110,38 @@ describe("FormFill page", () => {
 
   it("disables the upload button until a file is chosen", () => {
     renderWithRouting();
+    expect(screen.getByRole("button", { name: /^upload$/i })).toHaveProperty("disabled", true);
+  });
+
+  // --- Phase 4: "Other / not listed" free-text form type (SPEC-PHASE4.md §9) -------
+
+  it("reveals a free-text input when Other is selected and submits its value as form_type", async () => {
+    vi.mocked(api.uploadForm).mockResolvedValue({ form_id: "form-2", status: "pending" });
+    vi.mocked(api.getForm).mockResolvedValue({
+      ...baseForm,
+      id: "form-2",
+      schema_source: "inferred",
+      status: "in_review",
+      fields: [],
+    });
+
+    renderWithRouting();
+
+    fireEvent.change(screen.getByLabelText(/form type/i), { target: { value: "__other__" } });
+    const customInput = screen.getByLabelText(/what form is this/i);
+    fireEvent.change(customInput, { target: { value: "Marriage Certificate" } });
+    selectFile(screen.getByLabelText(/blank form image or pdf/i));
+    fireEvent.click(screen.getByRole("button", { name: /^upload$/i }));
+
+    await waitFor(() =>
+      expect(api.uploadForm).toHaveBeenCalledWith(expect.any(File), "Marriage Certificate"),
+    );
+  });
+
+  it("disables upload when Other is selected but no custom form name is typed", () => {
+    renderWithRouting();
+    fireEvent.change(screen.getByLabelText(/form type/i), { target: { value: "__other__" } });
+    selectFile(screen.getByLabelText(/blank form image or pdf/i));
     expect(screen.getByRole("button", { name: /^upload$/i })).toHaveProperty("disabled", true);
   });
 });

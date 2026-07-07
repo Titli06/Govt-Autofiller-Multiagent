@@ -5,6 +5,11 @@
 // DISABLED until every flagged field is resolved — this is enforced server-side too
 // (GET /download 409s until approved); the disabled button is a UX courtesy, not the
 // control.
+//
+// Phase 4 (SPEC-PHASE4.md §9): when schema_source === "inferred", an informational
+// banner (reusing the placement-warning banner pattern) explains why every field on
+// this form needs review — the page's per-field logic is otherwise unchanged, since
+// it's already generic over any FormFieldReviewOut.
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
@@ -20,6 +25,7 @@ export default function Review() {
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [warningDismissed, setWarningDismissed] = useState(false);
+  const [inferredNoticeDismissed, setInferredNoticeDismissed] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -124,6 +130,19 @@ export default function Review() {
         This is a draft. It is never submitted anywhere automatically — download the completed
         form and submit it yourself.
       </p>
+
+      {review.schema_source === "inferred" && !inferredNoticeDismissed && (
+        <div className="notice-banner" data-testid="inferred-form-notice">
+          <p>
+            This form wasn't in our library, so we detected its fields automatically. Every
+            field is shown for your review — please check each value and its placement before
+            downloading.
+          </p>
+          <button type="button" className="link" onClick={() => setInferredNoticeDismissed(true)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {review.placement_warning && !warningDismissed && (
         <div className="warning-banner" data-testid="placement-warning">

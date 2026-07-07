@@ -157,3 +157,47 @@ def test_high_stakes_and_provenance_carried_through():
     [result] = lookup([spec], snapshot)
     assert result["high_stakes"] is True
     assert result["source_doc_id"] == "doc-42"
+
+
+# --- Phase 4: mapping_tier/mapping_cap/placement carried through (SPEC-PHASE4.md §6.1) --
+
+
+def test_template_field_has_no_mapping_tier_or_cap():
+    spec = TemplateField(name="applicant_name", profile_key="full_name", high_stakes=False)
+    snapshot = {"full_name": [_candidate("Ravi Kumar")]}
+    [result] = lookup([spec], snapshot)
+    assert result["mapping_tier"] is None
+    assert result["mapping_cap"] is None
+    assert result["placement"] is None
+
+
+def test_inferred_spec_mapping_fields_carried_through_on_filled_field():
+    spec = TemplateField(
+        name="father_name",
+        profile_key="father_name",
+        high_stakes=False,
+        mapping_tier="exact",
+        mapping_cap=0.85,
+        placement={"page": 1, "bbox": [0.1, 0.2, 0.3, 0.25]},
+    )
+    snapshot = {"father_name": [_candidate("Suresh Kumar")]}
+    [result] = lookup([spec], snapshot)
+    assert result["mapping_tier"] == "exact"
+    assert result["mapping_cap"] == 0.85
+    assert result["placement"] == {"page": 1, "bbox": [0.1, 0.2, 0.3, 0.25]}
+
+
+def test_inferred_spec_mapping_fields_carried_through_on_missing_field():
+    spec = TemplateField(
+        name="purpose",
+        profile_key=None,
+        high_stakes=False,
+        mapping_tier=None,
+        mapping_cap=None,
+        placement={"page": 1, "bbox": [0.1, 0.2, 0.3, 0.25]},
+    )
+    [result] = lookup([spec], snapshot={})
+    assert result["missing"] == "no_mapping"
+    assert result["mapping_tier"] is None
+    assert result["mapping_cap"] is None
+    assert result["placement"] == {"page": 1, "bbox": [0.1, 0.2, 0.3, 0.25]}

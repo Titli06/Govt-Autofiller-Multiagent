@@ -16,6 +16,18 @@ never invents data. Every page is stamped with the `render_watermark_text` water
 this output is downloaded by the authenticated owner and is NEVER submitted anywhere
 (FR7).
 
+*** Phase 4: inferred-form placement (SPEC-PHASE4.md §7) *** An INFERRED form
+(schema_source="inferred") has no template file, so there is no per-form-type
+placement JSON to load. Instead each RenderField carries its OWN normalized bbox
+(`placement={"page": int, "bbox": [x0,y0,x1,y1]}`, 0-1 page fractions, from
+FormField.placement — Document-AI-detected, field_mapping_tool.infer_schema) which
+this module scales to the actual page rect at render time — DPI/page-size
+independent by construction. No AcroForm attempt on this path (an unseen scanned
+form has no named widgets to match). A field with no placement (undetected/
+low-confidence box) lands on the same appended "Additional fields" page as a
+template field with no coordinate/acro_field match — nothing is ever silently
+dropped, on either path.
+
 *** Font limitation (found live-testing, not yet fixed) *** `insert_text()` below uses
 PyMuPDF's default base-14 font (Helvetica/WinAnsi), which only covers Latin-1. A
 non-Latin-1 character silently renders as a substitute glyph instead of erroring —
@@ -72,6 +84,10 @@ class RenderField:
 
     field_name: str
     value: str | None
+    # Phase 4: this field's OWN normalized placement, for an INFERRED form only
+    # (None for a template form — the renderer looks placement up from the
+    # template JSON there instead, keyed by field_name).
+    placement: dict | None = None
 
 
 class RenderError(Exception):
@@ -140,18 +156,43 @@ def _append_unplaced_page(doc: fitz.Document, unplaced: list[tuple[str, str]], r
         y += 20
 
 
-def render(form_type: str, fields: list[RenderField], blank_bytes: bytes, content_type: str) -> bytes:
-    """Returns a single overlay PDF. Decrypted, full values only — the user's own
-    downloaded form legitimately carries full PII (masking is a display/API concern,
-    not a download concern; SPEC-PHASE3.md §8.6)."""
+def _render_inferred(doc: fitz.Document, fields: list[RenderField], unplaced: list[tuple[str, str]]) -> None:
+    """Phase 4 (SPEC-PHASE4.md §7): places each value at its OWN detected, normalized
+    bbox — no template, no AcroForm attempt. A field with no placement (undetected/
+    low-confidence box, or out-of-range page) lands on the appended page instead."""
+    for f in fields:
+        if f.value is None:
+            continue  # missing / approved-blank — never invent data
+
+        placed = False
+        if f.placement is not None:
+            page_index = f.placement["page"] - 1
+            if 0 <= page_index < doc.page_count:
+                page = doc[page_index]
+                rect = page.rect
+                x0, y0, x1, y1 = f.placement["bbox"]
+                box_height = (y1 - y0) * rect.height
+                font_size = max(6.0, min(box_height * 0.7, _DEFAULT_FONT_SIZE)) if box_height > 0 else _DEFAULT_FONT_SIZE
+                # Normalized (0-1) coordinates scale to the ACTUAL page rect, so this
+                # is DPI/page-size independent by construction — but still assumes
+                # the detected box itself sits on a flat, upright scan (see the
+                # skew-guard note in the module docstring).
+                page.insert_text((x0 * rect.width + 2, y1 * rect.height - 2), f.value, fontsize=font_size)
+                placed = True
+        if not placed:
+            unplaced.append((f.field_name, f.value))
+
+
+def _render_template(
+    form_type: str, doc: fitz.Document, fields: list[RenderField], unplaced: list[tuple[str, str]]
+) -> list[float] | None:
+    """Phase 2/3 template-first placement — unchanged. Returns reference_page_size
+    for the appended-page fallback."""
     template = load_template(form_type)
     specs_by_name = {spec.name: spec for spec in template.required_fields}
     ref_size = template.placement.get("reference_page_size")
     default_font_size = template.placement.get("default_font_size", _DEFAULT_FONT_SIZE)
-
-    doc = _open(blank_bytes, content_type)
     widgets = _widget_index(doc)
-    unplaced: list[tuple[str, str]] = []
 
     for f in fields:
         if f.value is None:
@@ -185,6 +226,31 @@ def render(form_type: str, fields: list[RenderField], blank_bytes: bytes, conten
                 continue
 
         unplaced.append((f.field_name, f.value))
+
+    return ref_size
+
+
+def render(
+    form_type: str,
+    fields: list[RenderField],
+    blank_bytes: bytes,
+    content_type: str,
+    schema_source: str = "template",
+) -> bytes:
+    """Returns a single overlay PDF. Decrypted, full values only — the user's own
+    downloaded form legitimately carries full PII (masking is a display/API concern,
+    not a download concern; SPEC-PHASE3.md §8.6).
+
+    Phase 4: `schema_source="inferred"` skips load_template entirely and places each
+    field at its OWN detected bbox (RenderField.placement) instead (§7)."""
+    doc = _open(blank_bytes, content_type)
+    unplaced: list[tuple[str, str]] = []
+
+    if schema_source == "inferred":
+        _render_inferred(doc, fields, unplaced)
+        ref_size = None
+    else:
+        ref_size = _render_template(form_type, doc, fields, unplaced)
 
     _stamp_watermark(doc)
     if unplaced:

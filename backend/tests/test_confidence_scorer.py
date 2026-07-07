@@ -266,3 +266,120 @@ def test_verified_and_verification_method_pass_through_to_output():
     [result] = scorer.score([_item(verified=True, verification_method="exact")])
     assert result["verified"] is True
     assert result["verification_method"] == "exact"
+
+
+# --- Phase 4: inferred-field cap + mandatory review (SPEC-PHASE4.md §6.6) --------------
+
+
+def _inferred_item(*, mapping_cap=None, inferred=True, **overrides):
+    item = _item(**overrides)
+    item["mapping_cap"] = mapping_cap
+    item["mapping_tier"] = "exact" if mapping_cap is not None else None
+    item["inferred"] = inferred
+    item["placement"] = {"page": 1, "bbox": [0.1, 0.2, 0.3, 0.25]}
+    return item
+
+
+def test_inferred_exact_verified_field_is_capped_below_high_band():
+    [result] = scorer.score(
+        [
+            _inferred_item(
+                mapping_cap=settings.map_cap_exact,
+                candidate_confidence=0.5,
+                candidate_status="confirmed",
+                verification_method="exact",
+                verified=True,
+                high_stakes=False,
+            )
+        ]
+    )
+    # Without the cap this would promote to ocr_confidence_high (0.90) via the exact
+    # promotion rule; the tier cap must win.
+    assert result["confidence"] == settings.map_cap_exact
+    assert result["confidence_band"] != "high"
+
+
+def test_inferred_mapping_flags_every_inferred_field_even_when_verified_and_not_high_stakes():
+    [result] = scorer.score(
+        [
+            _inferred_item(
+                mapping_cap=settings.map_cap_exact,
+                candidate_confidence=0.95,
+                candidate_status="confirmed",
+                verification_method="exact",
+                verified=True,
+                high_stakes=False,
+            )
+        ]
+    )
+    assert result["needs_review"] is True
+    assert result["review_reason"] == "inferred_mapping"
+    assert result["flags"]["inferred_mapping"] is True
+
+
+def test_review_reason_precedence_inferred_mapping_beats_high_stakes():
+    [result] = scorer.score(
+        [
+            _inferred_item(
+                mapping_cap=settings.map_cap_exact,
+                candidate_confidence=1.0,
+                candidate_status="user_confirmed",
+                verification_method="exact",
+                verified=True,
+                high_stakes=True,
+            )
+        ]
+    )
+    assert result["review_reason"] == "inferred_mapping"
+
+
+def test_review_reason_precedence_verification_failed_beats_inferred_mapping():
+    [result] = scorer.score(
+        [
+            _inferred_item(
+                mapping_cap=settings.map_cap_exact,
+                verified=False,
+                verification_method="llm",
+                high_stakes=False,
+            )
+        ]
+    )
+    assert result["review_reason"] == "verification_failed"
+
+
+def test_no_mapping_inferred_field_still_flagged_inferred_but_missing_wins_reason():
+    [result] = scorer.score(
+        [
+            _inferred_item(
+                mapping_cap=None,  # no_mapping — no cap to apply
+                value=None,
+                candidate_confidence=None,
+                candidate_status=None,
+                missing="no_mapping",
+                verified=False,
+                verification_method=None,
+                high_stakes=False,
+            )
+        ]
+    )
+    assert result["flags"]["inferred_mapping"] is True  # recorded in the audit trail
+    assert result["review_reason"] == "no_mapping"  # but missing takes precedence
+    assert result["confidence"] == 0.0  # no cap applied — mapping_cap was None
+
+
+def test_template_field_never_flagged_inferred_mapping_regression():
+    """A template field has no 'inferred'/'mapping_cap' keys at all (mirrors real
+    profile_lookup_tool output for a template form) — Phase 3 behavior must be
+    byte-for-byte unchanged."""
+    [result] = scorer.score(
+        [_item(high_stakes=False, candidate_confidence=0.95, candidate_status="confirmed")]
+    )
+    assert result["flags"]["inferred_mapping"] is False
+    assert result["needs_review"] is False
+    assert result["review_reason"] is None
+
+
+def test_placement_and_mapping_tier_pass_through_to_output():
+    [result] = scorer.score([_inferred_item(mapping_cap=settings.map_cap_strong)])
+    assert result["mapping_tier"] == "exact"
+    assert result["placement"] == {"page": 1, "bbox": [0.1, 0.2, 0.3, 0.25]}

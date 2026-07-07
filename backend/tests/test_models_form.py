@@ -107,3 +107,32 @@ def test_new_form_columns_default_null(db_session):
     assert form.rendered_s3_key is None
     assert form.skew_angle is None
     assert form.placement_warning is None
+
+
+# --- Phase 4: schema_source / placement columns ---------------------------------------
+
+
+def test_schema_source_defaults_template(db_session):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user)
+    db_session.commit()
+
+    db_session.refresh(form)
+    assert form.schema_source == "template"
+
+
+def test_field_placement_defaults_null_and_is_settable(db_session):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user)
+    field = _field(form.id, placement={"page": 1, "bbox": [0.1, 0.2, 0.3, 0.25]})
+    db_session.add(field)
+    db_session.commit()
+
+    db_session.refresh(field)
+    assert field.placement == {"page": 1, "bbox": [0.1, 0.2, 0.3, 0.25]}
+
+    other = _field(form.id, "father_name")
+    db_session.add(other)
+    db_session.commit()
+    db_session.refresh(other)
+    assert other.placement is None

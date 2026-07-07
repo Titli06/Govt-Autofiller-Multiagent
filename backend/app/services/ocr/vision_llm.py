@@ -201,6 +201,51 @@ def verify_value_on_document(images: list[bytes], value: str) -> bool:
     return bool(payload.get("matches", False))
 
 
+def map_field_labels(labels: list[str], canonical_keys: list[str]) -> dict[str, dict]:
+    """Semantically maps each detected form-field LABEL (e.g. "Father's Name" vs "Name
+    of Father") to one of the canonical profile keys, or "none" when nothing clearly
+    fits (SPEC-PHASE4.md §6.5) — the net-new "semantic field matching" the PRD calls
+    the differentiator (§5.2 explicitly rejects regex/string matching as "brittle
+    across format variance"). Returns a discrete TIER per label
+    ("exact"|"strong"|"weak"|"none"), not a raw self-reported float — confidence_scorer_tool
+    caps the field's score by a fixed, config-driven value per tier (CLAUDE.md: never
+    trust an LLM's self-reported confidence alone). Text-only call — no image, no
+    pixel coordinates ever requested (that's Document AI's job, services/form_placement/document_ai.py)."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "mappings": {
+                "type": "object",
+                "properties": {
+                    label: {
+                        "type": "object",
+                        "properties": {
+                            "profile_key": {"type": "string", "enum": [*canonical_keys, "none"]},
+                            "tier": {"type": "string", "enum": ["exact", "strong", "weak", "none"]},
+                        },
+                        "required": ["profile_key", "tier"],
+                    }
+                    for label in labels
+                },
+                "required": labels,
+            }
+        },
+        "required": ["mappings"],
+    }
+    contents: list = [
+        "These are field labels detected on an Indian government form: "
+        f"{labels}. Match each label to the personal-data field it is asking for, from "
+        f"this fixed vocabulary: {canonical_keys}. For each label, answer with the "
+        "canonical field it matches (or 'none' if nothing clearly fits — don't force a "
+        "guess) and how confident the match is: 'exact' (a clear synonym), 'strong' "
+        "(plausible match), 'weak' (uncertain), or 'none' (no match). Account for "
+        "phrasing/format variance — e.g. \"Father's Name\" and \"Name of Father\" both "
+        "mean father_name. Answer strictly as JSON matching the response schema."
+    ]
+    payload = _generate_json(contents, schema)
+    return payload.get("mappings") or {}
+
+
 def classify_form(images: list[bytes], known_form_types: list[str]) -> str:
     """Classifies a blank government form into one of `known_form_types`, or
     "unknown" when the model isn't confident it matches any of them (Phase 2's

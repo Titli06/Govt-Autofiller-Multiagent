@@ -10,14 +10,25 @@ this is now the tool's primary signal, not the profile candidate's self-reported
 where "inherited" is the Phase-2 rule: a user-confirmed/corrected candidate is 1.0,
 otherwise the candidate's grounded confidence.
 
+Phase 4 (SPEC-PHASE4.md §6.6): an inferred field's confidence is additionally CAPPED
+by its mapping tier (item["mapping_cap"], None for every template field) — an
+inferred field can never present as "high" band, per CLAUDE.md/PRD's "inferred
+schemas default to lower confidence." A NOT a raw self-reported LLM float; the tier
+caps are fixed, config-driven values (field_mapping_tool.py).
+
 A field is flagged needs_review when it is missing, failed verification (new
 top-precedence reason — a mismatch against the source document overrides even a
-high-stakes-verified value's trust), high-stakes (money/legal/date/ID, FR8), its
-source candidate is itself unresolved (trust doesn't launder through the fill step),
-or its confidence is below CONFIDENCE_THRESHOLD. A format transform is recorded but
-never itself a review trigger. High-stakes fields are ALWAYS flagged regardless of
-verification (FR8 is unconditional) — verification only changes whether the reviewer
-sees a green "verified against source" signal or a red one.
+high-stakes-verified value's trust), belongs to an INFERRED schema (item["inferred"] —
+every field on an inferred form is reviewed, because the mapping itself is an
+unverifiable inference document_verification structurally cannot catch: a
+mis-mapped field can still verify true against the source doc), high-stakes
+(money/legal/date/ID, FR8), its source candidate is itself unresolved (trust doesn't
+launder through the fill step), or its confidence is below CONFIDENCE_THRESHOLD. A
+format transform is recorded but never itself a review trigger. High-stakes fields
+are ALWAYS flagged regardless of verification (FR8 is unconditional) — verification
+only changes whether the reviewer sees a green "verified against source" signal or a
+red one. On a template form `inferred` is always false/absent, so this phase's
+scoring/precedence is byte-for-byte unchanged from Phase 3.
 """
 
 from __future__ import annotations
@@ -57,12 +68,16 @@ def _confidence(item: dict[str, Any]) -> float:
 
 
 def _review_reason(flags: dict[str, Any]) -> str | None:
-    # Precedence order (SPEC-PHASE3.md Decision 4): missing > verification_failed >
-    # high_stakes > unverified_source > low_confidence. transformed is never a reason.
+    # Precedence order (SPEC-PHASE4.md §6.6, revised from Phase 3): missing >
+    # verification_failed > inferred_mapping > high_stakes > unverified_source >
+    # low_confidence. transformed is never a reason. On a template form
+    # inferred_mapping is always false, so this table collapses to Phase 3's exactly.
     if flags["missing"] is not None:
         return flags["missing"]
     if flags["verification_failed"]:
         return "verification_failed"
+    if flags["inferred_mapping"]:
+        return "inferred_mapping"
     if flags["high_stakes"]:
         return "high_stakes"
     if flags["unverified_source"]:
@@ -76,10 +91,14 @@ def score(lookups: list[dict[str, Any]]) -> list[dict[str, Any]]:
     results = []
     for item in lookups:
         confidence = _confidence(item)
+        cap = item.get("mapping_cap")
+        if cap is not None:
+            confidence = min(confidence, cap)  # Phase 4 Decision 3 — never promotes above this
         verification_failed = item["missing"] is None and not item["verified"]
         flags = {
             "missing": item["missing"],
             "verification_failed": verification_failed,
+            "inferred_mapping": item.get("inferred", False),
             "high_stakes": item["high_stakes"],
             "unverified_source": item["candidate_status"] in _UNVERIFIED_STATUSES,
             "low_confidence": confidence < settings.confidence_threshold,
@@ -97,6 +116,8 @@ def score(lookups: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "transformed": item["transformed"],
                 "verified": item["verified"],
                 "verification_method": item["verification_method"],
+                "mapping_tier": item.get("mapping_tier"),
+                "placement": item.get("placement"),
                 "confidence": confidence,
                 "confidence_band": _band(confidence),
                 "needs_review": review_reason is not None,

@@ -4,8 +4,11 @@ Uses a known template from app/templates/ when the form is recognized. When it i
 not, infers the field schema from the uploaded form itself (UC3/FR4 — the hardest,
 most differentiating path). Inferred schemas default to lower confidence downstream.
 
-Phase 2 implements only the known-template branch (registry + mismatch decision);
-schema inference is Phase 4.
+This module implements only the known-template branch (registry, mismatch decision,
+`HIGH_STAKES_PROFILE_KEYS`); the inference branch itself lives in
+agent/graph.py (`_form_schema_node`) + agent/tools/field_mapping_tool.py
+(SPEC-PHASE4.md §6.2/§3) — this module supplies the shared `TemplateField` shape and
+canonical vocabulary both branches synthesize/consume.
 
 Phase 3 (SPEC-PHASE3.md §8.4.1) extends each template with a `placement` block: a
 template-level `reference_page_size`/`default_font_size` and, per field, either a
@@ -35,6 +38,11 @@ CANONICAL_PROFILE_KEYS = {
     "pan_number",
 }
 
+# Canonical keys that are always high-stakes regardless of source (Phase 4 §6.3) —
+# templates declare high_stakes by hand per field; an inferred field has no such
+# declaration, so it's derived from the matched canonical key instead.
+HIGH_STAKES_PROFILE_KEYS = {"dob", "aadhaar_number", "pan_number"}
+
 # Format grammar supported by profile_lookup_tool.apply_format (§3.3). "date:<strftime>"
 # is checked separately since the strftime suffix is open-ended.
 _LITERAL_FORMATS = {"as_is", "upper", "single_line"}
@@ -53,9 +61,15 @@ class TemplateField:
     profile_key: str | None
     high_stakes: bool
     format: str = "as_is"
-    # {"acro_field": str} OR {"page": int, "x": float, "y": float, "font_size"?: float};
-    # None => no known placement, the renderer routes this field to the "unplaced" page.
+    # {"acro_field": str} OR {"page": int, "x": float, "y": float, "font_size"?: float}
+    # (template fields) OR {"page": int, "bbox": [x0,y0,x1,y1]} normalized 0-1
+    # (inferred fields, Phase 4); None => no known placement, the renderer routes this
+    # field to the "unplaced" page.
     placement: dict | None = None
+    # Phase 4 — set only for a field synthesized by field_mapping_tool.infer_schema;
+    # None for every template field (loaded from JSON, never has these).
+    mapping_tier: str | None = None  # "exact" | "strong" | "weak" | None (no cap to apply)
+    mapping_cap: float | None = None  # confidence_scorer_tool caps the score to this
 
 
 @dataclass

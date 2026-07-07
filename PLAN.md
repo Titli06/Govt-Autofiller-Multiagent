@@ -65,59 +65,162 @@ download. This is the safety-critical slice.
 
 ---
 
-## Phase 4 — Schema inference for unseen forms (UC3, FR4/FR5)
+## Phase 4 — Schema inference for unseen forms (UC3, FR4/FR5)  ✅ implemented (see [SPEC-PHASE4.md](SPEC-PHASE4.md))
 The hardest, most differentiating path (PRD's core thesis: *semantic* field matching on
 unstructured paperwork with no fixed schema, not string matching) — do it only after the
 known-template path is solid. Phase 3 already scaffolded the two things this phase actually
 finishes; both are currently interface-only and provably unreachable.
 
-- [ ] **DB:** `Form.schema_source` (`template` | `inferred`) for auditability/metrics (PRD §9's
-      schema-inference-success-rate metric, Phase 6, reads this)
-- [ ] **Backend — field detection (finishes the Phase 3 stub):** `services/form_placement/document_ai.py`'s
+**Interview decisions (binding — [SPEC-PHASE4.md](SPEC-PHASE4.md) §2):**
+1. **Every inferred field always routes to review** (never auto-approved; auto-approve stays a
+   known-template privilege). `document_verification` checks a value against the *source ID doc*,
+   so a **mis-mapped** field (detected "Guardian's Name" → `full_name`) still verifies **TRUE** —
+   the value is on the Aadhaar, just wrong for *this* form. The verifier structurally can't catch
+   a mapping error; the human is the only backstop. New `inferred_mapping` flag → mandatory review.
+2. **Confident `classify_form` detection wins:** an unseen upload the vision-LLM confidently
+   recognizes as a known type is filled from the *template* (better placement + hand-authored
+   high-stakes), **not** inferred. Inference runs only when detection is `"unknown"`. Adopting the
+   detected template is **not** a `type_mismatch`.
+3. **Mapping confidence = discrete tiers → fixed caps** (`exact/strong/weak` = `0.85/0.70/0.50`,
+   config-driven); final = `min(scorer_confidence, tier_cap)`. **Not** a raw self-reported LLM float
+   (CLAUDE.md forbids leaning on that). Inferred fields therefore never band `high`. The value is
+   still independently grounded by `document_verification`; the tier only caps the score.
+4. **Upload gate = any free-text unknown `form_type`** triggers inference; the label is stored
+   verbatim (stripped, ≤64 chars) for history/metrics. No reserved sentinel. Empty → `422`.
+5. **Failure = reuse `failed`** (no new status): Document AI **transient** errors retry with capped
+   backoff; **terminal** errors or **zero** detected fields → `failed` with a safe non-PII reason.
+6. **No schema promotion** — infer fresh every upload; no template caching/fingerprinting in v1.
+7. **Inferred placement persists per-field** on a new `FormField.placement` JSON column (normalized
+   0–1 bbox); no re-calling (re-billing) Document AI at download time.
+8. **Value-region placement + unplaced-page fallback:** place into the detected value box; below
+   `documentai_min_confidence` (or no box) → the appended "Additional fields" page (Phase 3 safety
+   net), never a shaky coordinate stamp.
+9. **All detected fields included:** every Document-AI field becomes a `FormField`; unmapped ones
+   (tier `none`) → `no_mapping` (blank, always outstanding), hand-filled in review so the
+   downloaded form is **complete** (consistent with template forms' `annual_income`).
+
+- [x] **DB:** `Form.schema_source` (`template` | `inferred`) for auditability/metrics (PRD §9's
+      schema-inference-success-rate metric, Phase 6, reads this) **+ `FormField.placement`**
+      (nullable JSON, normalized bbox for inferred fields; `NULL` for template fields and
+      undetected/low-confidence boxes — Decision 7/8); migration `0005_schema_inference`.
+- [x] **Backend — field detection (finishes the Phase 3 stub):** `services/form_placement/document_ai.py`'s
       `detect_fields()` currently raises a fixed "Phase 4" error — wire it to the real **Google
       Document AI Form Parser** call (purpose-built bounding-box detection; the vision-LLM is
       deliberately never asked for pixel coordinates, per `services/ocr/vision_llm.py`'s
-      docstring). Needs its own credential provisioning: Document AI uses GCP
-      **service-account** auth (`GOOGLE_APPLICATION_CREDENTIALS`), not the **API-key** auth
-      Gemini uses via `google-genai` — same GCP project only means shared billing, not a
-      drop-in. Config keys (`documentai_location`, `documentai_processor_id`) and the
-      `google-cloud-documentai` dependency are already in place from Phase 3, just unused.
-- [ ] **Backend — reachability gate (finishes the Phase 3 stub):** `POST /api/forms/upload`
-      currently `422`s (`UNKNOWN_FORM_TYPE`) any `form_type` not in the template registry —
-      by design, this makes the inference path provably unreachable today. Phase 4 must relax
-      this gate (e.g. accept a declared type with no template as "infer it") before any of the
-      above can ever run; needs its own regression test, since nothing exercises this path yet.
-- [ ] **Backend — semantic field-to-profile mapping (the actual hard part, net-new code):**
-      NOT an extension of `agent/tools/profile_lookup_tool.py` — that tool only does exact,
-      human-pre-declared `profile_key` lookup from a template JSON, with zero semantic
-      capability. An inferred form has no human-authored mapping, so this needs a new agent
-      tool that semantically matches each Document-AI-detected field *label* (e.g. "Father's
-      Name" vs "Name of Father") to one of `form_schema_tool.CANONICAL_PROFILE_KEYS`, LLM-based
-      per PRD §5's explicit rejection of regex/string matching ("brittle across format
-      variance"). The match confidence caps the field's score in `confidence_scorer_tool`,
-      consistent with "inferred fields default to lower confidence" (CLAUDE.md/PRD).
-- [ ] **Backend — high-stakes policy for inferred fields:** templates declare `high_stakes` by
-      hand per field; an inferred field has no such declaration. Derive it instead from the
-      *matched canonical profile_key* (dob/aadhaar_number/pan_number are always high-stakes
-      regardless of source) rather than per-field metadata that doesn't exist yet.
-- [ ] **Backend — rendering:** `services/form_renderer.py` gains a placement source for
-      `schema_source == "inferred"` forms — Document-AI-detected bounding boxes instead of a
-      template's `(x, y)` — reusing the existing "Additional fields" appended-page fallback
-      (Phase 3, §8.4.2) unchanged for anything undetected/low-confidence.
-- [ ] **Backend — everything else in the Phase 3 pipeline is reused unchanged:**
-      `document_verification_tool`, `confidence_scorer_tool`, and the review/approve/download
-      endpoints don't care whether a field's mapping/placement came from a template or
-      inference — no HITL/download-gate logic to rebuild here.
-- [ ] **Frontend:** surface "inferred form" state — reuse the Phase 3 placement-warning banner
-      UI pattern rather than building a new one. The Review page itself needs no new logic;
-      it's already generic over any `FormFieldReviewOut`.
-- [ ] **Testing:** mock Document AI calls the same way Gemini's `classify_form`/
+      docstring). Extend `DetectedField` with `page`/`value_bbox` (normalized) and a
+      transient/terminal `DocumentAIError` split (mirrors `VisionExtractionError`). Needs its own
+      credential provisioning: Document AI uses GCP **service-account** auth
+      (`GOOGLE_APPLICATION_CREDENTIALS` + new `documentai_project_id`), not the **API-key** auth
+      Gemini uses via `google-genai` — same GCP project only means shared billing, not a drop-in.
+      `documentai_location`/`documentai_processor_id` and the `google-cloud-documentai` dependency
+      are already in place from Phase 3, just unused.
+- [x] **Backend — reachability gate (finishes the Phase 3 stub):** relax `POST /api/forms/upload`
+      to **accept any non-empty `form_type`** (Decision 4) — a known type still routes to the
+      template path; an unknown one triggers inference. The Phase-3 `422 UNKNOWN_FORM_TYPE` is
+      removed; empty/whitespace → `422`. Needs its own regression test, since nothing exercised
+      this path before.
+- [x] **Backend — semantic field-to-profile mapping (the actual hard part, net-new code):** new
+      `agent/tools/field_mapping_tool.py` (`infer_schema`) — NOT an extension of
+      `agent/tools/profile_lookup_tool.py` (that tool only does exact, human-pre-declared
+      `profile_key` lookup, zero semantic capability). It semantically matches each
+      Document-AI-detected field *label* ("Father's Name" vs "Name of Father") to one of
+      `form_schema_tool.CANONICAL_PROFILE_KEYS` via a new batched, tier-returning Gemini call
+      (`vision_llm.map_field_labels`), LLM-based per PRD §5's rejection of regex/string matching.
+      Both new calls (Document AI detector + LLM label mapper) are **injected callables** like
+      Phase 2/3's `classifier`/`verifier`, so nodes stay pure and CI never makes a real call. The
+      branch lives in `graph.py`'s `_form_schema_node` (template vs inference); `profile_lookup →
+      document_verification → confidence_scorer` run **unchanged** over the synthesized specs.
+- [x] **Backend — high-stakes policy for inferred fields:** derive from the *matched canonical
+      profile_key* (`form_schema_tool.HIGH_STAKES_PROFILE_KEYS = {dob, aadhaar_number, pan_number}`)
+      rather than per-field metadata that doesn't exist for an inferred form.
+- [x] **Backend — scorer (extend `confidence_scorer_tool`):** cap the final confidence by the
+      field's `mapping_cap` (Decision 3) and set the `inferred_mapping` flag on **every** inferred
+      field → `needs_review`, at a new precedence slot `missing > verification_failed >
+      inferred_mapping > high_stakes > unverified_source > low_confidence`. Template forms never set
+      it — their Phase-3 scoring/precedence is byte-for-byte unchanged (explicit regression test).
+- [x] **Backend — rendering:** `services/form_renderer.py` gains an inferred placement source —
+      per-field **normalized bbox** (from `FormField.placement`, scaled to the actual page) instead
+      of a template's `(x, y)`; skips `load_template` entirely for `schema_source == "inferred"`;
+      reuses the "Additional fields" appended-page fallback (Phase 3 §8.4.2) unchanged for
+      undetected/low-confidence boxes.
+- [x] **Backend — everything else in the Phase 3 pipeline is reused unchanged:**
+      `document_verification_tool` and the review/approve/download endpoints don't care whether a
+      field's mapping/placement came from a template or inference — no HITL/download-gate logic to
+      rebuild here. (Found and fixed one real gap during build: `GET /forms/{id}/download` and the
+      display-name lookups were still keyed off `Form.declared_form_type`, which breaks Decision 2's
+      confident-override case — a `_effective_form_type()` helper in `api/routes/forms.py` now
+      resolves the actual template to load, using `detected_form_type` only when it's a confident
+      override, so `load_template` never raises for a declared string that was never a real
+      template.)
+- [x] **Frontend:** a free-text **"Other / not listed"** upload option (sends an arbitrary
+      `form_type`); an **informational "inferred form" banner** on the review page (reuse the
+      Phase-3 placement-warning banner pattern) so the user knows why more fields than usual need
+      review; a label/tooltip for the new `inferred_mapping` reason. The Review page itself needed no
+      new logic — it's already generic over any `FormFieldReviewOut`.
+- [x] **Testing:** Document AI **and** the label mapper mocked the same way Gemini's `classify_form`/
       `verify_value_on_document` are mocked (`app.workers.tasks`-style patching) — real
-      network/billed calls are never exercised in CI.
-- [ ] **Done when:** upload a form with no template → system detects its fields (Document AI),
-      semantically maps what it can to profile data at a discounted confidence, runs it through
-      the *same* verification/review/download pipeline as a known-template form, fills what it
-      can, and routes the rest to review.
+      network/billed calls are never exercised in CI. Regression tests confirm a template form
+      scores/renders exactly as Phase 3 (`mapping_cap=None`/`inferred=False` are no-ops).
+- [x] **Verified without Docker/GCP:** backend **348 pytest** green (31 new: field_mapping_tool,
+      document_ai's pure bbox/text-anchor conversion + real `google.api_core.exceptions`
+      transient/terminal classification, `map_field_labels`, the graph's confident-override +
+      inference branches, scorer capping/`inferred_mapping` precedence, renderer's normalized-bbox
+      placement + appended-page fallback, `fill_form_task`'s full inference pipeline incl.
+      zero-detected-fields and Document-AI retry/terminal paths, and the API's `schema_source`
+      surfacing + confident-override/inferred download-render paths), `ruff` clean, `mypy` clean
+      (aside from the 2 pre-existing Phase-0 findings, untouched); frontend **49 vitest** green
+      (7 new: the "Other" free-text upload + disabled-until-typed state, the inferred-form review
+      banner shown/hidden by `schema_source`, and the `inferred_mapping` friendly label), `tsc -b`,
+      `eslint`, and `vite build` all clean.
+- [x] **Verified live stack (2026-07-07):** ADC wired (`GCLOUD_ADC_HOST_PATH` mount +
+      `GOOGLE_APPLICATION_CREDENTIALS` in `docker-compose.yml`, see README's Document AI setup
+      section); `docker compose up --build` — all 7 services healthy; migration `0005_schema_inference`
+      applied cleanly against real Postgres (`forms.schema_source`/`form_fields.placement` present).
+      Registered → verified (Mailpit) → logged in → uploaded a synthetic Aadhaar → real Gemini
+      extraction succeeded (Phase 1 regression) → uploaded a blank income-certificate form → real
+      Gemini `classify_form` correctly matched the known template → filled/reviewed/downloaded with
+      the full unmasked Aadhaar in the PDF and only masked values everywhere else (Phase 2/3
+      regression, byte-for-byte). Then the actual Phase 4 path: uploaded a form declared as
+      `"Marriage Certificate"` (not in the registry, no `422` — Decision 4) → real `classify_form`
+      returned `"unknown"` → real **Google Document AI Form Parser** call (confirmed via a direct
+      in-container probe: correct processor resolved, correct project, 7 real detected form fields
+      with genuine bounding boxes/confidences) → real Gemini `map_field_labels` semantically mapped
+      "Father Name" → `father_name`, "Date of Birth" → `dob`, "Aadhaar Number" → `aadhaar_number`,
+      "Permanent Address" → `address`, "Groom's Full Name" → `full_name`, "Place of Marriage" →
+      `no_mapping` — **every single one** of the 7 fields landed `needs_review: true,
+      review_reason: "inferred_mapping"` (Decision 1, live-confirmed), confidences tier-capped to
+      exactly `0.85/0.70/0.50` per Decision 3 (not merely unit-tested — the real LLM's tier
+      judgments came back and got capped live). Document AI even mis-detected one label/value pair
+      swapped ("Ravi Kumar" as a label mapped to `full_name` at the **weak** tier, `0.50`
+      confidence, `0.40` raw detection confidence) — a live, unscripted demonstration of exactly
+      the mis-mapping scenario Decision 1 exists to catch, correctly still flagged for mandatory
+      review. Resolved all 7 fields → form auto-approved → downloaded a **2-page** PDF: page 1 has
+      4 values placed at their real detected bounding boxes (scaled to the actual page), page 2 is
+      the appended "Additional fields" page holding the one field whose detection confidence
+      (`0.40`) fell below `documentai_min_confidence` (`0.5`) — Decision 8's low-confidence fallback,
+      live, with real data. Confirmed `form_fields.placement` persisted as real normalized bboxes in
+      Postgres for the inferred form and **not** persisted for the template form (Decision 7
+      regression check via direct SQL); confirmed ciphertext-only storage; grepped api+worker logs
+      across the entire session for every raw PII string used (names, Aadhaar digits, DOB, address)
+      — zero matches. **One real-world finding, not a bug:** Document AI's Form Parser only
+      populates `page.form_fields` when a label has adjacent VALUE text already present in the
+      image — a purely blank form (label + empty box/line, no example text) returned zero detected
+      fields in this session's synthetic fixtures (confirmed via direct probe: 0 form_fields but
+      text/lines/tokens were extracted fine, so the API call itself was healthy). This matters for
+      real-world blank-form uploads and is worth keeping in mind for future fixture/UX design, but
+      is outside this phase's code (the implementation correctly parses whatever Document AI
+      returns either way, including zero, which is the "fails cleanly" behavior Decision 5 requires).
+      **Also hit and resolved during this session:** Docker Desktop's engine went unresponsive
+      (same corruption pattern as the Phase 2 incident) mid-build twice; a full `wsl --shutdown` +
+      Docker Desktop relaunch fixed it this time without needing a factory reset.
+- [x] **Done when:** upload a form with no template → system detects its fields (Document AI),
+      semantically maps what it can to profile data at a discounted, **always-reviewed** confidence,
+      runs it through the *same* verification/review/download pipeline as a known-template form,
+      fills what it can (placing each value at its detected box or the appended page), and routes
+      **everything** to review; a confidently-recognized known form is filled from its template
+      instead
+      → verified end-to-end against the live stack with real Gemini + real Document AI calls, per
+      the line above.
 
 ---
 

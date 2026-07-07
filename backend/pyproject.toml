@@ -32,7 +32,7 @@ dependencies = [
     "cryptography",               # field-level PII encryption
     "python-multipart",           # file uploads
     "email-validator",            # pydantic EmailStr
-    "google-cloud-documentai",    # Phase-4-activated: form-parser field-detection fallback; unused in Phase 3
+    "google-cloud-documentai",    # Phase 4: Form Parser field-detection for schema inference (unseen forms)
 ]
 
 [project.optional-dependencies]

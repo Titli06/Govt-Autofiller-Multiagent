@@ -50,6 +50,7 @@ class FormOut(BaseModel):
     display_name: str
     detected_form_type: str | None
     status: str
+    schema_source: str
     fill_error: str | None
     page_count: int | None
     created_at: datetime
@@ -84,6 +85,7 @@ class FormReviewOut(BaseModel):
     form_type: str
     display_name: str
     status: str
+    schema_source: str
     download_ready: bool
     total_fields: int
     outstanding_fields: int

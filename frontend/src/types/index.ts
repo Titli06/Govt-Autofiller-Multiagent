@@ -84,9 +84,16 @@ export type ReviewReason =
   | "no_mapping"
   | "no_candidate"
   | "verification_failed"
+  // Phase 4: every field on an inferred-schema form is always reviewed — a mapping
+  // error can't be caught by document verification alone (SPEC-PHASE4.md Decision 1).
+  | "inferred_mapping"
   | "high_stakes"
   | "unverified_source"
   | "low_confidence";
+
+// Phase 4: "template" (known-template registry, incl. a confident-detection
+// override) | "inferred" (Document AI field detection + semantic label mapping).
+export type SchemaSource = "template" | "inferred";
 
 export interface FormUploadResponse {
   form_id: string;
@@ -120,6 +127,7 @@ export interface FormOut {
   display_name: string;
   detected_form_type: string | null;
   status: FormStatus;
+  schema_source: SchemaSource;
   fill_error: string | null;
   page_count: number | null;
   created_at: string;
@@ -158,6 +166,7 @@ export interface FormReviewOut {
   form_type: FormType;
   display_name: string;
   status: FormStatus;
+  schema_source: SchemaSource;
   download_ready: boolean;
   total_fields: number;
   outstanding_fields: number;

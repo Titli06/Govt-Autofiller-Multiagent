@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -51,6 +51,7 @@ function reviewOut(overrides: Partial<FormReviewOut> = {}): FormReviewOut {
     form_type: "income_certificate",
     display_name: "Income Certificate",
     status: "in_review",
+    schema_source: "template",
     download_ready: false,
     total_fields: 1,
     outstanding_fields: 0,
@@ -152,5 +153,26 @@ describe("Review page", () => {
     renderReview();
 
     await waitFor(() => expect(screen.getByText(/form not found/i)).toBeDefined());
+  });
+
+  // --- Phase 4: inferred-form banner (SPEC-PHASE4.md §9) ----------------------------
+
+  it("shows the inferred-form notice when schema_source is inferred, and can dismiss it", async () => {
+    vi.mocked(api.getFormReview).mockResolvedValue(reviewOut({ schema_source: "inferred" }));
+
+    renderReview();
+
+    expect(await screen.findByTestId("inferred-form-notice")).toBeDefined();
+    fireEvent.click(within(screen.getByTestId("inferred-form-notice")).getByRole("button", { name: /dismiss/i }));
+    await waitFor(() => expect(screen.queryByTestId("inferred-form-notice")).toBeNull());
+  });
+
+  it("does not show the inferred-form notice for a template form", async () => {
+    vi.mocked(api.getFormReview).mockResolvedValue(reviewOut({ schema_source: "template" }));
+
+    renderReview();
+
+    await screen.findByText("Ravi Kumar");
+    expect(screen.queryByTestId("inferred-form-notice")).toBeNull();
   });
 });

@@ -11,7 +11,6 @@ import type {
   DocumentUploadResponse,
   FormOut,
   FormReviewOut,
-  FormType,
   FormUploadResponse,
   ProfileField,
   ProfileOut,
@@ -171,7 +170,10 @@ export const api = {
       body: JSON.stringify({ value }),
     }),
 
-  uploadForm: (file: File, formType: FormType): Promise<FormUploadResponse> => {
+  // formType is a plain string (not FormType) — Phase 4 accepts any non-empty
+  // declared type, not just the known-template registry values; an unrecognized
+  // one triggers schema inference server-side instead of a 422.
+  uploadForm: (file: File, formType: string): Promise<FormUploadResponse> => {
     const body = new FormData();
     body.append("file", file);
     body.append("form_type", formType);

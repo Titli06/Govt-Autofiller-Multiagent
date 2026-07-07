@@ -19,11 +19,13 @@ from unittest.mock import patch
 import pytest
 from celery.exceptions import MaxRetriesExceededError
 
+from app.config import settings
 from app.core.encryption import build_aad, decrypt_field, encrypt_field
 from app.models.document import Document
 from app.models.form import Form, FormField
 from app.models.profile import Profile, ProfileField
 from app.models.user import User
+from app.services.form_placement.document_ai import DetectedField, DocumentAIError
 from app.services.ocr.vision_llm import VisionExtractionError
 from app.services.preprocessing import PreprocessingError
 from app.workers.tasks import _run_fill
@@ -238,9 +240,18 @@ def test_unknown_classification_still_fills_declared_type(
     assert form.detected_form_type == "unknown"
 
 
+@patch("app.workers.tasks.map_field_labels", return_value={})
+@patch("app.workers.tasks.detect_fields", return_value=[])
+@patch("app.workers.tasks.classify_form", return_value="unknown")
 @patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
 @patch("app.workers.tasks.get_document", return_value=b"raw bytes")
-def test_unknown_declared_form_type_fails_terminal(mock_get_doc, mock_preprocess, db_session):
+def test_unknown_declared_form_type_with_zero_detected_fields_fails_terminal(
+    mock_get_doc, mock_preprocess, mock_classify, mock_detect, mock_map, db_session
+):
+    """Phase 4 (SPEC-PHASE4.md Decision 4): an unknown declared form_type is no longer
+    an immediate 'unsupported form type' TemplateError (the upload gate now accepts
+    it and routes to inference) — but zero detected fields still fails cleanly,
+    never a vacuous empty draft (Decision 5)."""
     user = _make_user(db_session)
     form = _make_form(db_session, user, form_type="passport_renewal")
 
@@ -249,7 +260,7 @@ def test_unknown_declared_form_type_fails_terminal(mock_get_doc, mock_preprocess
 
     db_session.refresh(form)
     assert form.status == "failed"
-    assert form.fill_error == "unsupported form type"
+    assert form.fill_error == "could not detect any fields on this form"
     assert task.retry_calls == []
 
 
@@ -449,3 +460,151 @@ def test_skew_detector_failure_is_swallowed_fill_still_completes(
     db_session.refresh(form)
     assert form.status in ("in_review", "approved")
     assert form.placement_warning is None
+
+
+# --- Phase 4: schema inference for unseen forms (SPEC-PHASE4.md §6.7) -----------------
+
+
+@patch("app.workers.tasks.map_field_labels")
+@patch("app.workers.tasks.detect_fields")
+@patch("app.workers.tasks.classify_form", return_value="income_certificate")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_confident_detection_of_known_type_uses_template_path_never_calls_document_ai(
+    mock_get_doc, mock_preprocess, mock_classify, mock_detect, mock_map, db_session
+):
+    """Decision 2: a confident classify_form detection of a KNOWN type overrides an
+    unseen declared label — the template path is used, and Document AI/label mapper
+    are never even called."""
+    user = _make_user(db_session)
+    form = _make_form(db_session, user, form_type="marriage_certificate")
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    db_session.refresh(form)
+    assert form.schema_source == "template"
+    assert form.detected_form_type == "income_certificate"
+    assert form.status in ("in_review", "approved")
+    mock_detect.assert_not_called()
+    mock_map.assert_not_called()
+    rows = db_session.query(FormField).filter_by(form_id=form.id).all()
+    field_names = {r.field_name for r in rows}
+    assert field_names == {
+        "applicant_name", "father_name", "date_of_birth", "address", "annual_income", "aadhaar_number",
+    }
+
+
+@patch("app.workers.tasks.map_field_labels")
+@patch("app.workers.tasks.detect_fields")
+@patch("app.workers.tasks.classify_form", return_value="unknown")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_unrecognized_form_infers_schema_and_lands_in_review(
+    mock_get_doc, mock_preprocess, mock_classify, mock_detect, mock_map, db_session
+):
+    mock_detect.return_value = [
+        DetectedField(name="Father's Name", page=1, value_bbox=(0.1, 0.1, 0.6, 0.15), confidence=0.9),
+    ]
+    mock_map.return_value = {"Father's Name": {"profile_key": "father_name", "tier": "exact"}}
+
+    user = _make_user(db_session)
+    _seed_profile_field(db_session, user, "father_name", "Suresh Kumar")
+    form = _make_form(db_session, user, form_type="marriage_certificate")
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    db_session.refresh(form)
+    assert form.schema_source == "inferred"
+    assert form.status == "in_review"  # EVERY inferred field always needs review (Decision 1)
+
+    field = db_session.query(FormField).filter_by(form_id=form.id, field_name="father_s_name").one()
+    aad = build_aad(form.id, "father_s_name")
+    assert decrypt_field(field.value_encrypted, aad=aad) == "Suresh Kumar"
+    assert field.verified is True  # exact snippet match
+    assert field.confidence == settings.map_cap_exact  # tier-capped, never promoted to high
+    assert field.needs_review is True
+    assert field.review_reason == "inferred_mapping"
+    assert field.placement == {"page": 1, "bbox": [0.1, 0.1, 0.6, 0.15]}
+
+
+@patch("app.workers.tasks.map_field_labels", return_value={})
+@patch("app.workers.tasks.detect_fields", return_value=[])
+@patch("app.workers.tasks.classify_form", return_value="unknown")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_zero_detected_fields_fails_never_a_vacuous_approved_form(
+    mock_get_doc, mock_preprocess, mock_classify, mock_detect, mock_map, db_session
+):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user, form_type="marriage_certificate")
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    db_session.refresh(form)
+    assert form.status == "failed"
+    assert form.fill_error == "could not detect any fields on this form"
+    assert db_session.query(FormField).filter_by(form_id=form.id).count() == 0
+
+
+@patch("app.workers.tasks.map_field_labels")
+@patch("app.workers.tasks.detect_fields")
+@patch("app.workers.tasks.classify_form", return_value="unknown")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_document_ai_transient_error_retries(
+    mock_get_doc, mock_preprocess, mock_classify, mock_detect, mock_map, db_session
+):
+    mock_detect.side_effect = DocumentAIError("service unavailable", transient=True)
+    user = _make_user(db_session)
+    form = _make_form(db_session, user, form_type="marriage_certificate")
+
+    task = _FakeTask(retries=0, exhausted=False)
+    with pytest.raises(RuntimeError, match="Retry"):
+        _run_fill(task, db_session, str(form.id))
+
+    assert len(task.retry_calls) == 1
+    db_session.refresh(form)
+    assert form.status == "processing"
+
+
+@patch("app.workers.tasks.map_field_labels")
+@patch("app.workers.tasks.detect_fields")
+@patch("app.workers.tasks.classify_form", return_value="unknown")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_document_ai_terminal_error_fails_without_retry(
+    mock_get_doc, mock_preprocess, mock_classify, mock_detect, mock_map, db_session
+):
+    mock_detect.side_effect = DocumentAIError("bad config", transient=False)
+    user = _make_user(db_session)
+    form = _make_form(db_session, user, form_type="marriage_certificate")
+
+    task = _FakeTask()
+    _run_fill(task, db_session, str(form.id))
+
+    db_session.refresh(form)
+    assert form.status == "failed"
+    assert task.retry_calls == []
+
+
+@patch("app.workers.tasks.classify_form", return_value="income_certificate")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_template_field_placement_never_persisted_even_though_spec_has_one(
+    mock_get_doc, mock_preprocess, mock_classify, db_session
+):
+    """Regression: a template field's spec.placement is the template's OWN
+    {"page","x","y"} coordinate shape (copied through by profile_lookup_tool), which
+    must NEVER land on FormField.placement — that column is inferred-forms-only
+    (Decision 7). The renderer reads a template field's placement from the template
+    JSON, not the row."""
+    user = _make_user(db_session)
+    _seed_profile_field(db_session, user, "full_name", "Ravi Kumar")
+    form = _make_form(db_session, user)
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    db_session.refresh(form)
+    assert form.schema_source == "template"
+    rows = db_session.query(FormField).filter_by(form_id=form.id).all()
+    assert all(r.placement is None for r in rows)

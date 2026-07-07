@@ -55,3 +55,84 @@ entirely.
 
 See `backend/app/services/form_renderer.py` for the placement/rendering code and its
 inline notes on this tradeoff.
+
+## Schema inference for forms we haven't seen before
+
+Uploading a form isn't limited to the known templates (Income Certificate,
+Scholarship Application). Pick **"Other / not listed"** and type the form's name —
+the system will:
+
+1. Detect the form's own fields via **Google Document AI Form Parser** (purpose-built
+   bounding-box detection — a vision-LLM is deliberately never asked for pixel
+   coordinates; see `backend/app/services/ocr/vision_llm.py`'s docstring).
+2. **Semantically** match each detected field label (e.g. "Father's Name" vs "Name of
+   Father") to your profile data via an LLM call — not string/regex matching, which
+   is exactly what breaks across the phrasing/format variance real government forms
+   use.
+3. Fill what it can, at a **deliberately discounted confidence** (capped by how
+   confidently the label was matched), and place each value at its detected position
+   on the form (or an appended "Additional fields" page if no reliable box was
+   found — nothing is ever silently dropped).
+
+**Every field on an inferred form is routed to review, with no exceptions** — even
+one that verifies cleanly against your source ID document. That's not over-caution:
+verification only confirms the *value* is genuinely yours (e.g. your name really is
+on your Aadhaar), it can't confirm the *mapping* was right (e.g. that a detected
+"Guardian's Name" field was correctly matched to your name and not, say, a parent's).
+A confident mapping mistake would otherwise sail through verification undetected — a
+human review is the only real backstop for that failure mode. Download stays gated
+behind resolving every field, exactly as for a known-template form.
+
+If you confidently recognize the form yourself as one of the known templates, upload
+it under that type instead — the known-template path gives better field placement
+and doesn't need this discounted-confidence/mandatory-review treatment. (The system
+also does this automatically: if you pick "Other" but the form turns out to
+confidently match a known template, it's filled from that template, not inferred.)
+
+An inferred schema is **not** learned or cached — each upload re-runs detection and
+mapping fresh. See `backend/app/agent/tools/field_mapping_tool.py` and
+`backend/app/services/form_placement/document_ai.py` for the implementation, and
+`SPEC-PHASE4.md` for the full design rationale.
+
+### Document AI setup (required for schema inference)
+
+Google Document AI uses **GCP Application Default Credentials (ADC)** — this is a
+**different** mechanism from the Gemini **API key** used for OCR/vision calls
+elsewhere in this project ("same GCP project" only means shared billing, not a
+drop-in credential). You'll also need a **Form Parser** processor created in your GCP
+project, and its id/location/project set via `DOCUMENTAI_PROCESSOR_ID`,
+`DOCUMENTAI_LOCATION`, and `DOCUMENTAI_PROJECT_ID` (see `.env.example`). Without valid
+credentials or a configured processor, a schema-inference upload fails cleanly with a
+"could not detect any fields on this form"-style error — it never falls back to
+guessing.
+
+**Local Docker dev — one-time setup:**
+
+1. Run `gcloud auth application-default login` on your **host** machine (not inside a
+   container) and sign in with an account that has Document AI access on the project
+   set in `DOCUMENTAI_PROJECT_ID`. This writes a credentials file to:
+   - Windows: `%APPDATA%\gcloud\application_default_credentials.json`
+   - Mac/Linux: `$HOME/.config/gcloud/application_default_credentials.json`
+2. Set `GCLOUD_ADC_HOST_PATH` in your `.env` to that file's path (forward slashes on
+   Windows, e.g. `C:/Users/<you>/AppData/Roaming/gcloud/application_default_credentials.json`).
+3. That's it — `docker-compose.yml` mounts that file **read-only** into the `api` and
+   `worker` containers at `/root/.config/gcloud/application_default_credentials.json`
+   and sets `GOOGLE_APPLICATION_CREDENTIALS` to that in-container path itself, so
+   `GOOGLE_APPLICATION_CREDENTIALS` should stay **blank** in your `.env` (it's only
+   needed there if you run the worker directly on the host, without Docker).
+
+If `GCLOUD_ADC_HOST_PATH` is left unset, the compose file falls back to mounting a
+harmless placeholder file so the rest of the stack (Postgres/Redis/MinIO/the API
+itself) still starts normally — Document AI calls just fail cleanly until you
+complete the steps above. Re-run `gcloud auth application-default login`
+periodically; ADC tokens expire.
+
+**To verify it's working after `docker compose down && docker compose up --build`:**
+watch the `worker` container logs. `fill_form_task` never logs raw Document AI
+responses (no PII in logs), but a credentials problem surfaces as a `fill_form_task
+failed` log line with a safe reason like `"could not detect any fields on this
+form"` (auth/permission errors are treated as terminal, not retried) — if you instead
+see repeated retry attempts with a `"...temporarily unavailable"` reason, that's a
+transient network/quota issue rather than a credentials one. Uploading a form under
+**"Other / not listed"** and confirming it reaches the review page with at least one
+detected field (rather than immediately failing) is the practical end-to-end check.

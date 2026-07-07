@@ -20,6 +20,13 @@ const BAND_LABEL: Record<ConfidenceBand, string> = {
   low: "red",
 };
 
+// Friendlier copy for review reasons that need more explanation than an
+// underscore-replaced field name gives a non-technical reviewer (Phase 4, §9).
+// Anything not listed here falls back to the generic underscore-replace below.
+const REVIEW_REASON_LABEL: Partial<Record<string, string>> = {
+  inferred_mapping: "auto-matched field — please confirm",
+};
+
 type Field = ProfileField | FormFieldReviewOut;
 
 function isReviewField(field: Field): field is FormFieldReviewOut {
@@ -136,7 +143,10 @@ export default function ConfidenceField({
       <div className="confidence-field-meta">
         <span>{Math.round(field.confidence * 100)}% confidence</span>
         {review ? (
-          <span>{(field.review_reason ?? "resolved").replace(/_/g, " ")}</span>
+          <span>
+            {REVIEW_REASON_LABEL[field.review_reason ?? ""] ??
+              (field.review_reason ?? "resolved").replace(/_/g, " ")}
+          </span>
         ) : (
           <span>{field.status.replace(/_/g, " ")}</span>
         )}

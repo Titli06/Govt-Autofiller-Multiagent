@@ -55,8 +55,23 @@ services:
     # depend on the exec bit surviving the Windows bind mount.
     command: ["sh", "entrypoint.sh"]
     env_file: .env
+    environment:
+      # Document AI (Phase 4) uses GCP Application Default Credentials, not the
+      # Gemini API key — the google-cloud client library reads this path itself, it's
+      # not a pydantic-settings value, so it's set here rather than in .env. The
+      # `environment:` block overrides any same-named var from `env_file:` (.env
+      # deliberately leaves GOOGLE_APPLICATION_CREDENTIALS blank for local/non-Docker
+      # runs). See the volume mount below and README.md's Document AI setup section.
+      GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
     volumes:
       - ./backend:/app
+      # Mounts your local `gcloud auth application-default login` credentials into
+      # the container read-only. GCLOUD_ADC_HOST_PATH (set in .env) is the host path
+      # gcloud printed after that login; the ./README.md fallback is a harmless
+      # placeholder so `docker compose up` still works when you haven't set it (or
+      # aren't using Document AI locally) — Document AI auth then fails cleanly
+      # rather than blocking the rest of the stack.
+      - ${GCLOUD_ADC_HOST_PATH:-./README.md}:/root/.config/gcloud/application_default_credentials.json:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -79,8 +94,14 @@ services:
     build: ./backend
     command: celery -A app.workers.celery_app worker --loglevel=info
     env_file: .env
+    environment:
+      # See the `api` service's comment above — this is what actually calls Document
+      # AI (fill_form_task, for an inferred/unrecognized form), so it's the service
+      # that matters most for this mount.
+      GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
     volumes:
       - ./backend:/app
+      - ${GCLOUD_ADC_HOST_PATH:-./README.md}:/root/.config/gcloud/application_default_credentials.json:ro
     depends_on:
       postgres:
         condition: service_healthy
