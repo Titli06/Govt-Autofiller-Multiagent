@@ -6,12 +6,14 @@
 // attempt one silent /refresh and retry; if that fails, onAuthLost() notifies the app.
 
 import type {
+  DeleteProfileResponse,
   DocType,
   DocumentStatus,
   DocumentUploadResponse,
   FormOut,
   FormReviewOut,
   FormUploadResponse,
+  HistoryOut,
   ProfileField,
   ProfileOut,
   ReviewActionRequest,
@@ -205,4 +207,14 @@ export const api = {
     }
     return res.blob();
   },
+
+  getHistory: () => request<HistoryOut>("/history"),
+
+  // Irreversible data-only purge (Phase 5, Decision 1) — password-confirmed; the
+  // account/session survive, so no auth-state change happens on success.
+  deleteMyData: (password: string) =>
+    request<DeleteProfileResponse>("/profile", {
+      method: "DELETE",
+      body: JSON.stringify({ password }),
+    }),
 };

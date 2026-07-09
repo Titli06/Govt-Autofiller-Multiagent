@@ -224,8 +224,31 @@ finishes; both are currently interface-only and provably unreachable.
 
 ---
 
-## Phase 5 — History + data deletion (UC5/UC6, FR10/FR11)
+## Phase 5 — History + data deletion (UC5/UC6, FR10/FR11)  ✅ implemented (see [SPEC-PHASE5.md](SPEC-PHASE5.md))
 Reuse profile across forms and honor the data-minimization commitment.
+
+**Interview decisions (binding — [SPEC-PHASE5.md](SPEC-PHASE5.md) §2):**
+1. **Data-only purge; the account survives.** `DELETE /api/profile` destroys profile + all profile
+   fields + all documents + all forms/form-fields + every associated S3 object, but **keeps** the
+   `User` row, session, and refresh token — the user stays logged in on an empty dashboard, free to
+   rebuild. Full account teardown (deleting the user, revoking tokens) is deliberately **deferred**.
+2. **All-or-nothing purge only** — no per-document / per-form delete endpoint this phase.
+3. **Password re-entry confirms the purge.** The `DELETE` body carries the current password,
+   bcrypt-verified via the login path before anything is deleted; a mismatch → `403`, zero side
+   effects.
+4. **Block while jobs are genuinely in flight** → `409` if any `documents.ocr_status` /
+   `forms.status` is `pending`/`processing` **and** updated within the staleness window …
+5. … **staleness cutoff** (`purge_stale_job_seconds`, default 900s): a job stuck longer is treated as
+   dead and no longer blocks, so a crashed worker can't permanently wedge deletion.
+6. **History = all non-transient forms** (`in_review` | `approved` | `failed` | `type_mismatch`),
+   newest-first; `pending`/`processing` excluded. Failed/mismatch stay visible with their safe reason.
+7. **History rows deep-link to existing pages** (`approved` → download, `in_review` → continue
+   review, failed → reason) — **no new endpoints** beyond `GET /api/history`.
+8. **Purge atomicity = gather keys → best-effort S3 delete → single DB transaction.** DB is the
+   source of truth and always ends clean; an S3 delete failure is counted (`s3_delete_failures`),
+   never fatal — a flaky S3 call can't block a privacy feature.
+9. **No Alembic migration** — every FK cascade this phase needs already exists (Phases 1–4); the
+   "explicit `Form` delete by `user_id`" is application logic, not DDL.
 
 **Consistency notes carried forward from Phase 4 (checked 2026-07-07 — read before building):**
 - **Cascade delete is NOT automatic through `Form`/`FormField`.** `Form.profile_field_id` →
@@ -253,18 +276,47 @@ Reuse profile across forms and honor the data-minimization commitment.
   `FORM_TYPE_LABELS[historyItem.form_type]` will silently break for those. Widen both fields to
   `string` and fix the one `FORM_TYPE_LABELS[...]` call site (cast or guard) when building History.
 
-- [ ] **DB:** cascade-delete rules (profile + documents + form history) for full purge — see the
-      `SET NULL` vs. `CASCADE` note above; explicit `Form` deletion by `user_id` required
-- [ ] **Backend:** `GET /api/history` (past filled forms, incl. `schema_source`); `DELETE /api/profile`
-      cascade (Profile → ProfileField, explicit Form/FormField delete, purge `Document.s3_key` +
-      `Form.s3_key` + `Form.rendered_s3_key` from S3); confirm profile is fetched once and reused
-      across forms in a session
-- [ ] **Frontend:** History dashboard (past forms + profile data, showing `schema_source` per form);
-      explicit, easy-to-find delete-my-data flow with confirmation; widen `FormType`-typed fields
-      per the note above
-- [ ] **Done when:** a user can file multiple forms reusing one profile, view them in history
+- [x] **DB:** **no migration** (Decision 9) — the cascade rules already exist. The purge is
+      application logic in `api/routes/profile.py`: explicit `DELETE FROM form_fields` (by form ids
+      for the user) → `forms` by `user_id` → `profile_fields` (by profile id for the user) →
+      `profiles` by `user_id` → `documents` by `user_id`, all inside one transaction. Deletes children
+      explicitly rather than leaning on DB-level `ON DELETE CASCADE`/`SET NULL` alone — those FKs
+      remain a correct backstop in Postgres, but SQLite (used in the test suite) doesn't enforce FK
+      actions unless a pragma is set, so explicit deletes keep behavior identical in both.
+- [x] **Backend:** `GET /api/history` (non-transient forms newest-first, incl. `schema_source` +
+      field counts via one grouped read, not N+1; Decision 6); `DELETE /api/profile` **data-only
+      purge** — password re-auth (Decision 3), in-flight `409` with a staleness cutoff (Decisions
+      4/5, compared in Python via an `_aware()` UTC-normalizer rather than a SQL datetime `WHERE`,
+      mirroring `auth.py`'s refresh-token-expiry pattern — SQLite doesn't round-trip tzinfo), gather
+      S3 keys → best-effort delete of `Document.s3_key` + `Form.s3_key` + `Form.rendered_s3_key` →
+      single DB transaction (Decision 8), counts-only response, account/session kept alive (Decision
+      1); added `purge_stale_job_seconds` config (default 900s); added a UC5 regression test (no new
+      code — `profile_lookup_tool` already reads the profile fresh per fill).
+- [x] **Frontend:** History dashboard (past forms + `schema_source` badge + per-status deep-links to
+      Review/download, Decision 7; profile data already served by the existing Profile page);
+      explicit, easy-to-find **password-confirmed** delete-my-data flow with an irreversible-action
+      warning, showing the returned counts on success; widened `FormOut`/`FormReviewOut.form_type` to
+      `string` + guarded the one `FORM_TYPE_LABELS[...]` call site in `FormFill.tsx`.
+- [x] **Docs:** `README.md` — added a "History and data deletion" section documenting the deletion
+      guarantee (what a purge destroys, that the account survives, the best-effort-S3 /
+      transactional-DB posture) and the History view.
+- [x] **Verified without Docker:** backend **366 pytest** green (18 new: `GET /api/history`
+      filtering/ordering/field-counts/cross-user, `DELETE /api/profile` happy-path incl. a
+      manual-origin `ProfileField` and rendered-PDF key, wrong-password 403 with zero side effects,
+      recent-vs-stale in-flight blocking, best-effort S3-failure-still-commits, idempotent-on-empty,
+      cross-user isolation), `ruff` clean, `mypy` clean (aside from the 2 pre-existing Phase-0
+      findings, untouched); frontend **61 vitest** green (12 new: History empty/list/badge/actions
+      per status, the delete-modal gating + success/403/409 paths), `tsc --noEmit`, `eslint`, and
+      `vite build` all clean.
+- [ ] **Verified live stack:** not yet run against `docker compose up` with a real Postgres/MinIO —
+      unlike Phases 1–4, this phase touches no external LLM/vision API, so the highest-value check
+      left is exercising the real cascade DB writes and S3 deletes end-to-end rather than a
+      provider integration.
+- [x] **Done when:** a user can file multiple forms reusing one profile, view them in history
       (including past inferred-schema forms, clearly labeled), and permanently delete everything —
-      profile, documents, every form and its rendered PDF — in one action
+      profile, documents, every form and its rendered PDF — in one password-confirmed action, while
+      their account survives for immediate re-use
+      → verified without Docker per the line above; live-stack verification is the one remaining step.
 
 ---
 

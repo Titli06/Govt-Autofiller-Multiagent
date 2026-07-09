@@ -109,5 +109,11 @@ class Settings(BaseSettings):
     map_cap_strong: float = 0.70
     map_cap_weak: float = 0.50
 
+    # Data purge (Phase 5). A pending/processing document/form older than this is
+    # treated as a dead job and no longer blocks DELETE /api/profile, so a crashed
+    # worker can't wedge deletion. Comfortably exceeds a worst-case OCR/fill incl.
+    # retries (ocr/fill_max_retries=3 x backoff + LLM latency).
+    purge_stale_job_seconds: int = 900
+
 
 settings = Settings()

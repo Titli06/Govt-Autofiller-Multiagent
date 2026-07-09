@@ -56,6 +56,36 @@ entirely.
 See `backend/app/services/form_renderer.py` for the placement/rendering code and its
 inline notes on this tradeoff.
 
+## History and data deletion
+
+**History** (`GET /api/history`, the History page) lists every past form that has
+finished processing — `in_review`, `approved`, `failed`, or `type_mismatch` (a form
+still `pending`/`processing` doesn't show up yet). Each row shows whether the form
+came from a known template or was auto-detected (`schema_source`), how many fields
+are still outstanding, and deep-links straight into the existing Review page or the
+existing download endpoint — there's no separate history-specific viewer.
+
+**Deleting your data** (`DELETE /api/profile`, the "Delete all my data" flow at the
+bottom of the History page) is a **data-only, irreversible purge**: your profile,
+every profile field (including ones you hand-typed during a review correction), every
+uploaded document, and every form you've filled — including any already-rendered PDF
+— are permanently deleted, along with their objects in S3/MinIO. **Your account
+itself is untouched** — you stay logged in on an empty dashboard and can immediately
+re-upload to start over. (Deleting the account itself isn't built — this only clears
+data.)
+
+Because this is irreversible, the endpoint requires your **current password** in the
+request body (re-verified server-side) before deleting anything, and it's blocked
+with a `409` while a document or form is still actively being processed — though a
+job that's been stuck for more than `PURGE_STALE_JOB_SECONDS` (default 15 minutes) no
+longer counts as "in progress," so a crashed worker can never permanently block
+deletion.
+
+S3 deletes are **best-effort**: the database delete is what actually matters for the
+data-minimization guarantee, and it always completes as one transaction regardless of
+whether every S3 object delete succeeded (a rare S3 failure is logged and reported
+back in the response's `s3_delete_failures` count, never left to block the purge).
+
 ## Schema inference for forms we haven't seen before
 
 Uploading a form isn't limited to the known templates (Income Certificate,

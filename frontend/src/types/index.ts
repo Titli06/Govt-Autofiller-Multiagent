@@ -123,7 +123,9 @@ export interface FormFieldOut {
 
 export interface FormOut {
   id: string;
-  form_type: FormType;
+  // string, not FormType — Phase 4 (Decision 4) made declared_form_type an
+  // arbitrary free-text label for inferred forms, not just a registry key.
+  form_type: string;
   display_name: string;
   detected_form_type: string | null;
   status: FormStatus;
@@ -163,7 +165,7 @@ export interface FormFieldReviewOut {
 
 export interface FormReviewOut {
   id: string;
-  form_type: FormType;
+  form_type: string; // see FormOut.form_type — free-text for an inferred form
   display_name: string;
   status: FormStatus;
   schema_source: SchemaSource;
@@ -186,4 +188,33 @@ export interface ReviewActionResponse {
   status: FormStatus;
   download_ready: boolean;
   warning: string | null;
+}
+
+// --- Phase 5: history + data deletion ------------------------------------------------
+
+export interface HistoryItem {
+  id: string;
+  form_type: string;
+  display_name: string;
+  schema_source: SchemaSource;
+  // Non-transient only — pending/processing forms never appear in history.
+  status: "in_review" | "approved" | "failed" | "type_mismatch";
+  fill_error: string | null;
+  total_fields: number;
+  outstanding_fields: number;
+  download_ready: boolean;
+  created_at: string;
+  filled_at: string | null;
+}
+
+export interface HistoryOut {
+  forms: HistoryItem[];
+}
+
+export interface DeleteProfileResponse {
+  documents_deleted: number;
+  forms_deleted: number;
+  profile_fields_deleted: number;
+  s3_objects_deleted: number;
+  s3_delete_failures: number;
 }

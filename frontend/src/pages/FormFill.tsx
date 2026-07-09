@@ -131,7 +131,11 @@ export default function FormFill() {
           {form.status === "type_mismatch" && (
             <p className="error">
               This looks like a {form.detected_form_type ?? "different"} form, not a{" "}
-              {FORM_TYPE_LABELS[form.form_type]}. Please re-select the correct type and re-upload.
+              {/* form_type is a plain string now (Phase 5 widening) — only a known
+                  registry type ever reaches type_mismatch (SPEC-PHASE4.md Decision 2),
+                  but guard the lookup anyway rather than assume it. */}
+              {FORM_TYPE_LABELS[form.form_type as FormType] ?? form.form_type}. Please re-select
+              the correct type and re-upload.
             </p>
           )}
           {form.status === "failed" && <p className="error">{form.fill_error ?? "Fill failed."}</p>}

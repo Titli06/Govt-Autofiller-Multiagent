@@ -1,26 +1,51 @@
-"""Profile routes: view the verified data store; confirm/correct flagged fields.
+"""Profile routes: view the verified data store; confirm/correct flagged fields;
+irreversibly purge all data (Phase 5, FR10, SPEC-PHASE5.md §6.2).
 
-DELETE / (cascade delete of profile + documents + history) is Phase 5 — first-class
-data-minimization feature, not built yet; the FKs are already ON DELETE CASCADE.
+DELETE / is a **data-only** purge — profile, all profile fields, all documents, all
+forms/form-fields, and every associated S3 object. The User row/session/refresh token
+are untouched (SPEC-PHASE5.md Decision 1); the user stays logged in on an empty
+dashboard afterward.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
+from app.config import settings
 from app.core.encryption import build_aad, decrypt_field, encrypt_field, mask_for
+from app.core.logging import logger
+from app.core.security import verify_password
 from app.core.validators import is_valid_aadhaar, is_valid_pan, normalize_gender, parse_dob
 from app.models.document import Document
+from app.models.form import Form, FormField
 from app.models.profile import Profile, ProfileField
 from app.models.user import User
-from app.schemas.profile import CorrectFieldRequest, ProfileFieldOut, ProfileFieldSource, ProfileOut
+from app.schemas.profile import (
+    CorrectFieldRequest,
+    DeleteProfileRequest,
+    DeleteProfileResponse,
+    ProfileFieldOut,
+    ProfileFieldSource,
+    ProfileOut,
+)
+from app.services.storage import delete_document
 
 router = APIRouter()
+
+_BUSY_STATUSES = ("pending", "processing")
+
+
+def _aware(dt: datetime) -> datetime:
+    """Normalize a possibly-naive DB datetime (SQLite) to tz-aware UTC for comparison
+    (mirrors api/routes/auth.py's helper — SQLite doesn't round-trip tzinfo)."""
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
 
 # Re-validate a correction against the same format rule the extraction grounding uses
 # (SPEC-PHASE1.md §3.3) — free-text fields (name/address) have no format rule.
@@ -126,3 +151,96 @@ def correct_field(
     db.commit()
 
     return _to_out(field, _get_source_document(db, field))
+
+
+@router.delete("", response_model=DeleteProfileResponse)
+def delete_my_data(
+    body: DeleteProfileRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> DeleteProfileResponse:
+    """Irreversible data-only purge (Decision 1): profile + all profile fields, all
+    documents, all forms + form fields, and every associated S3 object. The User
+    row/session/refresh token are untouched — the caller stays logged in."""
+    if not verify_password(body.password, user.password_hash):
+        raise _err(status.HTTP_403_FORBIDDEN, "Password is incorrect", "INVALID_PASSWORD")
+
+    # In-flight guard with a staleness cutoff (Decisions 4/8): a job stuck longer than
+    # this is treated as dead and no longer blocks, so a crashed worker can't
+    # permanently wedge deletion. Filtered by status in SQL, but staleness is checked
+    # in Python (via _aware) rather than a SQL datetime comparison — SQLite (tests)
+    # doesn't round-trip tzinfo, so comparing naive vs. aware datetimes in a WHERE
+    # clause is unreliable (mirrors api/routes/auth.py's refresh-token expiry checks).
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.purge_stale_job_seconds)
+    busy_timestamps = [
+        *db.scalars(
+            select(Document.updated_at).where(
+                Document.user_id == user.id, Document.ocr_status.in_(_BUSY_STATUSES)
+            )
+        ),
+        *db.scalars(
+            select(Form.updated_at).where(
+                Form.user_id == user.id, Form.status.in_(_BUSY_STATUSES)
+            )
+        ),
+    ]
+    if any(_aware(dt) >= cutoff for dt in busy_timestamps):
+        raise _err(
+            status.HTTP_409_CONFLICT,
+            "A document or form is still being processed; try again shortly",
+            "JOBS_IN_PROGRESS",
+        )
+
+    # Gather every S3 key BEFORE any delete (Decision 7).
+    doc_keys = list(db.scalars(select(Document.s3_key).where(Document.user_id == user.id)))
+    form_key_rows = db.execute(
+        select(Form.s3_key, Form.rendered_s3_key).where(Form.user_id == user.id)
+    ).all()
+    form_keys = [key for row in form_key_rows for key in row if key]
+
+    # Best-effort S3 delete — never fatal, never logs a key/label/value (Decision 7).
+    s3_deleted = 0
+    s3_failed = 0
+    for key in (*doc_keys, *form_keys):
+        try:
+            delete_document(key)
+            s3_deleted += 1
+        except Exception:
+            s3_failed += 1
+            logger.warning("profile_purge s3_delete_failed user_id=%s", user.id)
+
+    # Single DB transaction. Children are deleted explicitly rather than relying
+    # solely on the DB-level ON DELETE CASCADE/SET NULL FKs — those remain a correct
+    # backstop in Postgres, but SQLite (used in tests) doesn't enforce FK actions
+    # unless a pragma is set, and explicit deletes keep behavior identical either way.
+    form_ids = select(Form.id).where(Form.user_id == user.id)
+    db.execute(delete(FormField).where(FormField.form_id.in_(form_ids)))
+    n_forms = db.execute(delete(Form).where(Form.user_id == user.id)).rowcount
+
+    profile_ids = select(Profile.id).where(Profile.user_id == user.id)
+    n_profile_fields = db.execute(
+        delete(ProfileField).where(ProfileField.profile_id.in_(profile_ids))
+    ).rowcount
+    db.execute(delete(Profile).where(Profile.user_id == user.id))
+
+    n_docs = db.execute(delete(Document).where(Document.user_id == user.id)).rowcount
+    db.commit()
+
+    logger.info(
+        "profile_purge user_id=%s forms=%d documents=%d profile_fields=%d "
+        "s3_deleted=%d s3_failed=%d",
+        user.id,
+        n_forms,
+        n_docs,
+        n_profile_fields,
+        s3_deleted,
+        s3_failed,
+    )
+
+    return DeleteProfileResponse(
+        documents_deleted=n_docs,
+        forms_deleted=n_forms,
+        profile_fields_deleted=n_profile_fields,
+        s3_objects_deleted=s3_deleted,
+        s3_delete_failures=s3_failed,
+    )

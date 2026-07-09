@@ -36,3 +36,18 @@ class ProfileOut(BaseModel):
 
 class CorrectFieldRequest(BaseModel):
     value: str
+
+
+# --- Phase 5: data-only purge (FR10) -----------------------------------------------
+
+
+class DeleteProfileRequest(BaseModel):
+    password: str  # re-auth confirmation for an irreversible action
+
+
+class DeleteProfileResponse(BaseModel):
+    documents_deleted: int
+    forms_deleted: int
+    profile_fields_deleted: int
+    s3_objects_deleted: int
+    s3_delete_failures: int  # best-effort S3 leaks, surfaced for transparency (counts only)
