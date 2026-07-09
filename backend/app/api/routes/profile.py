@@ -5,6 +5,9 @@ DELETE / is a **data-only** purge — profile, all profile fields, all documents
 forms/form-fields, and every associated S3 object. The User row/session/refresh token
 are untouched (SPEC-PHASE5.md Decision 1); the user stays logged in on an empty
 dashboard afterward.
+
+Phase 6 (SPEC-PHASE6.md §6.8) extends the purge to also delete the user's
+`pipeline_run` metrics rows — they're user data, not an exempt audit trail.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from app.core.security import verify_password
 from app.core.validators import is_valid_aadhaar, is_valid_pan, normalize_gender, parse_dob
 from app.models.document import Document
 from app.models.form import Form, FormField
+from app.models.metrics import PipelineRun
 from app.models.profile import Profile, ProfileField
 from app.models.user import User
 from app.schemas.profile import (
@@ -213,6 +217,11 @@ def delete_my_data(
     # solely on the DB-level ON DELETE CASCADE/SET NULL FKs — those remain a correct
     # backstop in Postgres, but SQLite (used in tests) doesn't enforce FK actions
     # unless a pragma is set, and explicit deletes keep behavior identical either way.
+    # Phase 6: pipeline_run rows are user data too (metrics are not an exempt audit
+    # trail, SPEC-PHASE6.md Decision 6) — deleted by user_id like everything else, so
+    # a full purge never orphans a metrics row.
+    db.execute(delete(PipelineRun).where(PipelineRun.user_id == user.id))
+
     form_ids = select(Form.id).where(Form.user_id == user.id)
     db.execute(delete(FormField).where(FormField.form_id.in_(form_ids)))
     n_forms = db.execute(delete(Form).where(Form.user_id == user.id)).rowcount

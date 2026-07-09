@@ -14,6 +14,7 @@ import type {
   FormReviewOut,
   FormUploadResponse,
   HistoryOut,
+  MetricsOut,
   ProfileField,
   ProfileOut,
   ReviewActionRequest,
@@ -209,6 +210,8 @@ export const api = {
   },
 
   getHistory: () => request<HistoryOut>("/history"),
+
+  getMetrics: () => request<MetricsOut>("/metrics"),
 
   // Irreversible data-only purge (Phase 5, Decision 1) — password-confirmed; the
   // account/session survive, so no auth-state change happens on success.

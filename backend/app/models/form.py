@@ -127,6 +127,11 @@ class FormField(Base):
     # fields (the renderer uses the template JSON) and for an inferred field whose box
     # was undetected/low-confidence (-> appended "Additional fields" page).
     placement: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Semantic label->profile mapping tier for an INFERRED field: exact | strong |
+    # weak | none. NULL for template fields (hand-authored, not tiered). Computed in
+    # confidence_scorer_tool.score() (Phase 4); persisted as of Phase 6 to make the
+    # mapping-tier-distribution metric (PRD §9) buildable (SPEC-PHASE6.md §3.1).
+    mapping_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

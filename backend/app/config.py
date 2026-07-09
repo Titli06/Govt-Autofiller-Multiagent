@@ -115,5 +115,10 @@ class Settings(BaseSettings):
     # retries (ocr/fill_max_retries=3 x backoff + LLM latency).
     purge_stale_job_seconds: int = 900
 
+    # Time-saved metric (Phase 6). No in-app manual-fill baseline exists, so manual
+    # time is ESTIMATED: manual_seconds_per_field x total_fields. Surfaced as an
+    # explicit estimate, never as a measurement (SPEC-PHASE6.md Decision 5).
+    manual_seconds_per_field: int = 45
+
 
 settings = Settings()

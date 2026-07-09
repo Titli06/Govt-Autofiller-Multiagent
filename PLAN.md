@@ -320,7 +320,7 @@ Reuse profile across forms and honor the data-minimization commitment.
 
 ---
 
-## Phase 6 — Metrics instrumentation (PRD §9, NFR)
+## Phase 6 — Metrics instrumentation (PRD §9, NFR)  ✅ implemented (see [SPEC-PHASE6.md](SPEC-PHASE6.md))
 Cross-cutting slice: the metrics are part of the deliverable, not optional telemetry.
 
 **Consistency notes carried forward from Phases 3–4 (checked 2026-07-07 — the "recoverable, not
@@ -342,20 +342,106 @@ dashboarded" seams this phase is meant to wire up):**
   **This phase must add a `mapping_tier` column** (nullable `String(16)`, mirroring how
   `placement` was added — `NULL` for template fields) before this specific metric is buildable.
 - Frontend should also show whether a completed form came from `schema_source == "inferred"` next
-  to its metrics (ties into Phase 5's History view showing the same field).
+  to its metrics — **done, not speculative:** `frontend/src/pages/History.tsx` already renders an
+  "Auto-detected" badge from `HistoryItem.schema_source` and already computes
+  `total_fields`/`outstanding_fields` per form via `GET /api/history`. Phase 6's planned "lightweight
+  metrics view (per-form: fields auto-filled vs. reviewed, latency, schema_source)" substantially
+  **overlaps with History as it stands today** — the only field it's missing is latency. Decide
+  explicitly in this phase's interview whether to extend History in place (add a latency column/row
+  detail) or build a separate metrics page; don't silently duplicate the per-form projection.
 
-- [ ] **DB:** persist per-run metrics (latency, auto-fill %, schema-inference outcome); **add
-      `FormField.mapping_tier`** (see the blocked-metric note above) before computing tier
-      distribution
-- [ ] **Backend:** `metrics/instrumentation.py` timers/counters across pipeline stages — end-to-end
-      latency, % auto-filled at high confidence, auto-fill accuracy vs. ground truth (test set),
-      time-saved, schema-inference success rate, mapping-tier distribution, inferred-form review
-      burden, verification pass/fail rate, review time (see the itemized seams above — most of this
-      is arithmetic over existing columns, not new instrumentation)
-- [ ] **Frontend:** lightweight metrics view (per-form: fields auto-filled vs. reviewed, latency,
-      `schema_source`)
-- [ ] **Done when:** each completed form reports its latency and auto-fill/review breakdown, and
-      aggregate metrics (including the schema-inference and mapping-tier ones) are queryable
+**Consistency notes carried forward from Phase 5 (checked 2026-07-10 — read before building):**
+- **⚠️ The Phase-5 purge doesn't know about a metrics table that doesn't exist yet.**
+  `DELETE /api/profile` (`backend/app/api/routes/profile.py`) explicitly deletes exactly five things,
+  in a fixed order, inside one transaction: `form_fields` (by the user's form ids) → `forms` (by
+  `user_id`) → `profile_fields` (by the user's profile id) → `profiles` (by `user_id`) → `documents`
+  (by `user_id`) — deliberately **not** relying on DB-level `ON DELETE CASCADE` alone, because SQLite
+  (used in the test suite) doesn't enforce FK actions without a pragma. If this phase adds a new
+  per-run metrics table/columns (as its own DB checklist item below calls for), **that table is not
+  in the purge's list.** Shipping Phase 6 without updating the purge would let a full "delete
+  everything" purge silently leave orphaned metrics rows behind, breaking the guarantee Phase 5 just
+  built and tested (FR10). **This phase must extend `delete_my_data` to also delete the new metrics
+  rows for the user**, following the same explicit-delete-by-`user_id` pattern (not a bare FK
+  cascade) — and decide explicitly whether a "deletion event" audit record (see below) is exempt from
+  deleting itself, or whether an audit trail is out of scope for this project entirely.
+- **A deletion-event metric seam already exists — don't re-instrument it.** SPEC-PHASE5.md §11 named
+  "a deletion event" as a metric this phase should make dashboardable. It already has a hook: the
+  purge emits a structured, PII-free log line —
+  `profile_purge user_id=%s forms=%d documents=%d profile_fields=%d s3_deleted=%d s3_failed=%d` — on
+  every successful purge. Parse/aggregate that, or promote it to a first-class metrics event; either
+  way, don't add a second, separate deletion-tracking mechanism.
+- **Reuse History's per-form field-count pattern.** `GET /api/history` computes
+  `total_fields`/`outstanding_fields` per form via **one grouped `SELECT`, aggregated in Python**
+  (not a query per form) — the same "fields auto-filled vs. reviewed" number this phase's metrics
+  need. Reuse that pattern/query rather than re-deriving it.
+- **SPEC-PHASE5.md §11 also named a profile-reuse-count metric** (forms per user drawing on one
+  profile — the UC5 time-savings denominator), validated safe to build: Phase 5 added a regression
+  test confirming `profile_lookup_tool` re-fetches the profile fresh on every fill (no stale
+  cross-fill cache), so a simple `GROUP BY user_id` over `forms` is a trustworthy denominator.
+
+**Interview decisions (binding — [SPEC-PHASE6.md](SPEC-PHASE6.md) §2):** hybrid storage
+(`FormField.mapping_tier` column + a lightweight `pipeline_run` table for coarse spans/counters,
+everything else derived on-read); a separate Metrics page + `GET /api/metrics` aggregate endpoint
+(History keeps its per-form projection, now with latency added — no duplication, resolving the
+Q2-vs-Done-when tension explicitly in SPEC-PHASE6.md §6.6); accuracy = both a live approved-as-is-
+vs-corrected proxy AND a standalone offline ground-truth harness; latency = coarse spans only (fill,
+review, OCR) — no per-stage sub-timers; time-saved = a config seconds-per-field ESTIMATE, clearly
+labeled as such, never presented as measured; no separate deletion-audit table — `pipeline_run` rows
+are user data and are purged like everything else; aggregates are strictly per-user, no global
+endpoint; a `pipeline_run` row is written at fill completion and updated at approval (idempotent
+upsert/overwrite, including on a Phase-3 reopen → re-approve cycle).
+
+- [x] **DB:** migration `0006_metrics` — `FormField.mapping_tier` (nullable `String(16)`, unblocks
+      the tier-distribution metric that was computed then discarded since Phase 4) + new
+      `pipeline_run` table (`form_id` unique, `user_id` indexed, both `ON DELETE CASCADE`, coarse
+      `fill_latency_ms`/`review_latency_ms` + snapshot counters); `DELETE /api/profile` extended to
+      delete the user's `pipeline_run` rows explicitly by `user_id` (same pattern as every other
+      purge delete), so the Phase-5 purge stays complete — no orphaned metrics rows.
+- [x] **Backend:** `metrics/instrumentation.py`'s `record_fill()` (called from every terminal branch
+      of `fill_form_task` — success, type_mismatch, `_fail_form`) and `record_review()` (called from
+      `submit_review_action` when a form reaches `approved`, including re-approval after a reopen);
+      `GET /api/metrics` (new router) computing per-user aggregates — end-to-end/review/OCR latency
+      averages, auto-fill rate, high-confidence share, schema-inference success rate, mapping-tier
+      distribution, verification pass rate, the accuracy proxy, and the estimate-labeled time-saved —
+      all pure arithmetic over `pipeline_run` + `form_fields`/`documents` metadata, zero decryption;
+      `GET /api/history` extended with per-form `fill_latency_ms`/`review_latency_ms` via one grouped
+      `pipeline_run` read (no N+1, mirrors the existing field-count pattern); `backend/scripts/
+      eval_accuracy.py` — a standalone, never-in-CI harness that runs the real graph (real Gemini +
+      Document AI calls) against a committed synthetic fixture set (`tests/fixtures/eval/`) and
+      reports true precision/recall against hand-labeled ground truth.
+- [x] **Frontend:** a new **Metrics** page (aggregate cards: auto-fill rate, latency, schema-inference
+      success, mapping-tier distribution, verification pass rate, accuracy proxy, estimate-labeled
+      time-saved — `null` ratios render "n/a", never a fake 0%) routed/linked alongside History; the
+      History page gained a per-row latency line from the new `fill_latency_ms`/`review_latency_ms`;
+      `types/index.ts` gained `MetricsOut` + `HistoryItem` latency fields; `api/client.ts` gained
+      `getMetrics()`.
+- [x] **Verified without Docker:** backend **397 pytest** green (31 new: `PipelineRun`/
+      `mapping_tier` model checks, `record_fill`/`record_review` unit tests incl. idempotent
+      upsert/overwrite and reopen→re-approve, `fill_form_task` writing/upserting `pipeline_run` rows
+      and persisting `mapping_tier` on inferred fields only, the review endpoint's `record_review`
+      call site incl. a safe no-op for a pre-Phase-6 form, History's latency surfacing incl. `null`
+      for a pre-Phase-6 form, the purge's new `pipeline_run` deletion incl. cross-user isolation, and
+      `GET /api/metrics`'s full aggregate formula set incl. empty-account all-null/all-zero,
+      zero-denominator → `null` not `0`, and cross-user isolation), `ruff` clean, `mypy` clean (aside
+      from the 2 pre-existing Phase-0 findings, untouched); the eval harness sanity-checked with the
+      real LLM/Document-AI calls mocked (network-free plumbing check, not a real accuracy run) —
+      correctly demonstrated its own point live: two fields matched ground truth exactly yet still
+      counted as *not* auto-filled because they're high-stakes (FR8 always routes those to review,
+      confirming the harness reports what actually reaches the user, not raw string match); frontend
+      **69 vitest** green (8 new: Metrics page empty-state/ratios/"n/a"-for-null/estimate-labeling/
+      mapping-tier-distribution/error, History's latency line incl. tolerating `null`), `tsc -b`,
+      `eslint`, and `vite build` all clean. Migration `0006`'s `upgrade`/`downgrade` verified
+      syntactically valid and correctly chained as the new Alembic head (`alembic heads` →
+      `0006_metrics`), consistent with this project's no-Docker dev environment (see
+      `memory/dev-environment.md`) — not yet applied against a real Postgres.
+- [ ] **Verified live stack:** not yet run against `docker compose up` with a real Postgres — the
+      metrics path itself makes no external LLM/vision calls, so the highest-value check left is the
+      real migration apply + the real Gemini/Document-AI calls inside `scripts/eval_accuracy.py`.
+- [x] **Done when:** each completed form reports its latency and auto-fill/review breakdown (History,
+      per-form), and aggregate metrics — including the schema-inference and mapping-tier ones — are
+      queryable via `GET /api/metrics` and visible on the Metrics page
+      → verified without Docker per the line above; live-stack verification (real migration +
+      real-credentialed `eval_accuracy.py` run) is the one remaining step.
 
 ---
 

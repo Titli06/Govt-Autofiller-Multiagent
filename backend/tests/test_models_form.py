@@ -136,3 +136,23 @@ def test_field_placement_defaults_null_and_is_settable(db_session):
     db_session.commit()
     db_session.refresh(other)
     assert other.placement is None
+
+
+# --- Phase 6: mapping_tier column ------------------------------------------------------
+
+
+def test_mapping_tier_defaults_null_and_is_settable(db_session):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user)
+    field = _field(form.id, mapping_tier="exact")
+    db_session.add(field)
+    db_session.commit()
+
+    db_session.refresh(field)
+    assert field.mapping_tier == "exact"
+
+    other = _field(form.id, "father_name")
+    db_session.add(other)
+    db_session.commit()
+    db_session.refresh(other)
+    assert other.mapping_tier is None

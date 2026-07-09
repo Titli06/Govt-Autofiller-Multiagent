@@ -9,6 +9,7 @@ import { Link } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
 import type { DeleteProfileResponse, HistoryItem } from "../types";
+import { formatDuration } from "../utils/format";
 
 const STATUS_LABEL: Partial<Record<string, string>> = {
   in_review: "Needs review",
@@ -120,6 +121,10 @@ export default function History() {
                 <span>
                   {item.total_fields - item.outstanding_fields} of {item.total_fields} fields
                   resolved
+                </span>
+                <span data-testid={`latency-${item.id}`}>
+                  Filled in {formatDuration(item.fill_latency_ms)}
+                  {item.review_latency_ms ? ` · reviewed in ${formatDuration(item.review_latency_ms)}` : ""}
                 </span>
               </div>
 

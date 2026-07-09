@@ -196,3 +196,35 @@ button.link {
 .upload-status {
   margin-top: 20px;
 }
+
+.metric-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.metric-card {
+  background: #fff;
+  border: 1px solid #e6e8eb;
+  border-radius: 8px;
+  padding: 14px 16px;
+  min-width: 180px;
+}
+
+.metric-card-label {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.metric-card-value {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.metric-card-detail {
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+}

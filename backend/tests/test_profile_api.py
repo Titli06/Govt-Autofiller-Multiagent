@@ -13,6 +13,7 @@ import pytest
 from app.core.encryption import build_aad, encrypt_field
 from app.models.document import Document
 from app.models.form import Form, FormField
+from app.models.metrics import PipelineRun
 from app.models.profile import Profile, ProfileField
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
@@ -407,3 +408,43 @@ def test_delete_profile_cross_user_isolation(client, sent_emails, db_session, de
     assert db_session.query(Profile).filter_by(user_id=uuid.UUID(user_b)).count() == 1
     assert db_session.query(Document).filter_by(id=doc_b.id).count() == 1
     assert db_session.query(Form).filter_by(id=form_b.id).count() == 1
+
+
+# --- Phase 6: purge also deletes pipeline_run rows (SPEC-PHASE6.md §6.8) --------------
+
+
+def _seed_pipeline_run(db_session, user_id, form) -> PipelineRun:
+    run = PipelineRun(
+        form_id=form.id,
+        user_id=uuid.UUID(user_id),
+        schema_source="template",
+        terminal_status="approved",
+        total_fields=1,
+        autofilled_fields=1,
+    )
+    db_session.add(run)
+    db_session.flush()
+    return run
+
+
+def test_delete_profile_removes_pipeline_run_rows(client, sent_emails, db_session, deleted_s3_keys):
+    headers, user_id = _register_and_login(client, sent_emails)
+    form = _seed_form(db_session, user_id, status="approved")
+    _seed_pipeline_run(db_session, user_id, form)
+    db_session.commit()
+
+    r = client.request("DELETE", "/api/profile", json={"password": PASSWORD}, headers=headers)
+    assert r.status_code == 200
+    assert db_session.query(PipelineRun).filter_by(user_id=uuid.UUID(user_id)).count() == 0
+
+
+def test_delete_profile_pipeline_run_cross_user_isolation(client, sent_emails, db_session, deleted_s3_keys):
+    headers_a, user_a = _register_and_login(client, sent_emails, email="pa@example.com")
+    _, user_b = _register_and_login(client, sent_emails, email="pb@example.com")
+    form_b = _seed_form(db_session, user_b, status="approved")
+    run_b = _seed_pipeline_run(db_session, user_b, form_b)
+    db_session.commit()
+
+    r = client.request("DELETE", "/api/profile", json={"password": PASSWORD}, headers=headers_a)
+    assert r.status_code == 200
+    assert db_session.query(PipelineRun).filter_by(id=run_b.id).count() == 1

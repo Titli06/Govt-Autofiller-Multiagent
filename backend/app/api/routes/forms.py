@@ -15,6 +15,11 @@ confident-detection override fired (an unseen declared label the vision-LLM
 confidently recognized as a known type), that's `detected_form_type`, not the raw
 declared string — the declared string was never a real template and load_template
 would raise for it.
+
+Phase 6 (SPEC-PHASE6.md §6.3): `submit_review_action` calls
+`metrics.instrumentation.record_review` whenever the form's status flips to
+`approved` (including a re-approval after a Decision-9 reopen), recording review
+latency + approved-as-is/corrected counts onto the form's `pipeline_run` row.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from app.core.validators import (
     normalize_pan,
     parse_dob,
 )
+from app.metrics.instrumentation import record_review
 from app.models.document import Document
 from app.models.form import Form, FormField
 from app.models.profile import Profile, ProfileField
@@ -439,6 +445,8 @@ def submit_review_action(
     rows = db.query(FormField).filter(FormField.form_id == form.id).all()
     outstanding = any(r.needs_review and not r.reviewed for r in rows)
     form.status = "in_review" if outstanding else "approved"
+    if form.status == "approved":
+        record_review(db, form)  # sets review latency + approved-as-is/corrected counts
     db.commit()
 
     doc = db.get(Document, field.source_doc_id) if field.source_doc_id is not None else None

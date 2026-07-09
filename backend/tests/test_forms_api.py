@@ -15,6 +15,7 @@ import pytest
 from app.core.encryption import build_aad, decrypt_field, encrypt_field
 from app.models.document import Document
 from app.models.form import Form, FormField
+from app.models.metrics import PipelineRun
 from app.models.profile import Profile, ProfileField
 from app.models.user import User
 
@@ -776,3 +777,71 @@ def test_download_inferred_form_passes_schema_source_and_field_placement(
     assert captured["form_type"] == "marriage_certificate"  # declared string — no override applies
     assert captured["schema_source"] == "inferred"
     assert captured["placements"]["father_s_name"] == {"page": 1, "bbox": [0.1, 0.1, 0.6, 0.15]}
+
+
+# --- Phase 6: record_review call site (SPEC-PHASE6.md §6.3) ---------------------------
+
+
+def test_review_reaching_approved_updates_pipeline_run(client, sent_emails, db_session):
+    from datetime import datetime, timedelta, timezone
+
+    headers = _register_and_login(client, sent_emails)
+    upload = _upload(client, headers)
+    form_id = upload.json()["form_id"]
+    form, rows = _seed_reviewable_form(db_session, form_id)
+    form.filled_at = datetime.now(timezone.utc) - timedelta(seconds=30)
+    db_session.add(
+        PipelineRun(
+            form_id=form.id,
+            user_id=form.user_id,
+            schema_source="template",
+            terminal_status="in_review",
+            total_fields=3,
+            autofilled_fields=1,
+        )
+    )
+    db_session.commit()
+
+    client.post(
+        f"/api/forms/{form_id}/review",
+        headers=headers,
+        json={"field_id": str(rows["aadhaar_number"].id), "action": "approve"},
+    )
+    r = client.post(
+        f"/api/forms/{form_id}/review",
+        headers=headers,
+        json={"field_id": str(rows["annual_income"].id), "action": "approve_blank"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "approved"
+
+    run = db_session.query(PipelineRun).filter_by(form_id=form.id).one()
+    assert run.terminal_status == "approved"
+    assert run.review_latency_ms is not None and run.review_latency_ms > 0
+    assert run.reviewed_fields == 2  # aadhaar_number + annual_income needed review
+    assert run.approved_as_is == 2  # approve + approve_blank
+    assert run.corrected_fields == 0
+
+
+def test_review_reaching_approved_with_no_pipeline_run_row_is_safe(client, sent_emails, db_session):
+    """A form seeded without ever going through fill_form_task's record_fill (as
+    every other test in this file does) has no pipeline_run row — the review
+    endpoint's record_review call must be a safe no-op, not a 500."""
+    headers = _register_and_login(client, sent_emails)
+    upload = _upload(client, headers)
+    form_id = upload.json()["form_id"]
+    _, rows = _seed_reviewable_form(db_session, form_id)
+
+    client.post(
+        f"/api/forms/{form_id}/review",
+        headers=headers,
+        json={"field_id": str(rows["aadhaar_number"].id), "action": "approve"},
+    )
+    r = client.post(
+        f"/api/forms/{form_id}/review",
+        headers=headers,
+        json={"field_id": str(rows["annual_income"].id), "action": "approve_blank"},
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "approved"
+    assert db_session.query(PipelineRun).count() == 0

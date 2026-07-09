@@ -1,0 +1,55 @@
+{
+  "_comment": "Offline accuracy-eval fixtures for scripts/eval_accuracy.py (SPEC-PHASE6.md §6.7). Synthetic data only, no real PII. 'profile' seeds a fake ProfileSnapshot (as if these fields were already extracted and confirmed); each fixture's 'expected' is ground truth for the form's own field names, used to score auto-filled values.",
+  "profile": {
+    "full_name": {
+      "value": "Ravi Kumar",
+      "confidence": 0.95,
+      "status": "confirmed",
+      "source_doc_id": "aadhaar-1",
+      "source_snippet": "Ravi Kumar"
+    },
+    "father_name": {
+      "value": "Suresh Kumar",
+      "confidence": 0.9,
+      "status": "confirmed",
+      "source_doc_id": "aadhaar-1",
+      "source_snippet": "S/O Suresh Kumar"
+    },
+    "dob": {
+      "value": "1995-08-15",
+      "confidence": 0.9,
+      "status": "confirmed",
+      "source_doc_id": "aadhaar-1",
+      "source_snippet": "DOB: 15/08/1995"
+    },
+    "address": {
+      "value": "123 MG Road, Pune",
+      "confidence": 0.85,
+      "status": "confirmed",
+      "source_doc_id": "aadhaar-1",
+      "source_snippet": "123 MG Road, Pune"
+    },
+    "aadhaar_number": {
+      "value": "234123412346",
+      "confidence": 0.95,
+      "status": "confirmed",
+      "source_doc_id": "aadhaar-1",
+      "source_snippet": "2341 2341 2346"
+    }
+  },
+  "source_documents": {},
+  "fixtures": [
+    {
+      "name": "income_certificate_basic",
+      "form_type": "income_certificate",
+      "image": "income_certificate_basic.png",
+      "expected": {
+        "applicant_name": "Ravi Kumar",
+        "father_name": "Suresh Kumar",
+        "date_of_birth": "15/08/1995",
+        "address": "123 MG Road, Pune",
+        "aadhaar_number": "234123412346"
+      }
+    }
+  ]
+}

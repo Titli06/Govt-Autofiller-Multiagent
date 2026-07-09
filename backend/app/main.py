@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.agent.tools.form_schema_tool import load_registry
-from app.api.routes import auth, documents, forms, history, profile
+from app.api.routes import auth, documents, forms, history, metrics, profile
 from app.config import settings
 from app.core.logging import configure_logging, logger
 from app.services.storage import ensure_bucket
@@ -51,6 +51,7 @@ app.include_router(documents.router, prefix="/api/documents", tags=["documents"]
 app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(forms.router, prefix="/api/forms", tags=["forms"])
 app.include_router(history.router, prefix="/api/history", tags=["history"])
+app.include_router(metrics.router, prefix="/api/metrics", tags=["metrics"])
 
 
 @app.get("/health")

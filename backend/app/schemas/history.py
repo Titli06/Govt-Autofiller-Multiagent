@@ -25,6 +25,10 @@ class HistoryItemOut(BaseModel):
     download_ready: bool  # status == "approved"
     created_at: datetime
     filled_at: datetime | None
+    # Phase 6 (SPEC-PHASE6.md §6.6): from pipeline_run, via a grouped read (no N+1).
+    # None for a pre-Phase-6 form (no pipeline_run row) or a span not yet reached.
+    fill_latency_ms: int | None
+    review_latency_ms: int | None
 
 
 class HistoryOut(BaseModel):

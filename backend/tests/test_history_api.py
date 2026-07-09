@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from app.models.form import Form, FormField
+from app.models.metrics import PipelineRun
 
 EMAIL = "citizen@example.com"
 PASSWORD = "supersecret1"
@@ -182,3 +183,41 @@ def test_history_cross_user_isolation(client, sent_emails, db_session):
 
     r = client.get("/api/history", headers=headers_a)
     assert len(r.json()["forms"]) == 1
+
+
+# --- Phase 6: per-form latency (SPEC-PHASE6.md §6.6) -----------------------------------
+
+
+def test_history_surfaces_latency_from_pipeline_run(client, sent_emails, db_session):
+    headers, user_id = _register_and_login(client, sent_emails)
+    form = _make_form(db_session, user_id, status="approved")
+    db_session.flush()
+    db_session.add(
+        PipelineRun(
+            form_id=form.id,
+            user_id=uuid.UUID(user_id),
+            schema_source="template",
+            terminal_status="approved",
+            total_fields=2,
+            autofilled_fields=2,
+            fill_latency_ms=4200,
+            review_latency_ms=0,
+        )
+    )
+    db_session.commit()
+
+    r = client.get("/api/history", headers=headers)
+    item = next(f for f in r.json()["forms"] if f["id"] == str(form.id))
+    assert item["fill_latency_ms"] == 4200
+    assert item["review_latency_ms"] == 0
+
+
+def test_history_latency_null_for_pre_phase6_form_without_pipeline_run(client, sent_emails, db_session):
+    headers, user_id = _register_and_login(client, sent_emails)
+    form = _make_form(db_session, user_id, status="approved")
+    db_session.commit()
+
+    r = client.get("/api/history", headers=headers)
+    item = next(f for f in r.json()["forms"] if f["id"] == str(form.id))
+    assert item["fill_latency_ms"] is None
+    assert item["review_latency_ms"] is None

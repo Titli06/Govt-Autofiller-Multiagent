@@ -24,6 +24,12 @@ inferred schema that detects ZERO usable fields fails the form (never a vacuous
 and each field's `placement` (normalized bbox) is persisted onto `FormField.placement`
 — but ONLY for an inferred form; a template form's placement lives in its template
 JSON, not on the row.
+
+Phase 6 (SPEC-PHASE6.md §6.2) persists each field's `mapping_tier` (previously
+computed by confidence_scorer_tool and discarded) and calls
+`metrics.instrumentation.record_fill` in every terminal branch (success,
+type_mismatch, `_fail_form`) so a `pipeline_run` row lands in the same transaction as
+the status commit.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from app.config import settings
 from app.core.encryption import build_aad, decrypt_field, encrypt_field, mask_for
 from app.core.logging import logger
 from app.db.session import SessionLocal
+from app.metrics.instrumentation import record_fill
 from app.models.document import Document
 from app.models.form import Form, FormField
 from app.models.profile import Profile, ProfileField
@@ -279,6 +286,7 @@ def _run_fill(task, db: Session, form_id: str) -> None:
         form.status = "type_mismatch"
         form.fill_error = f"declared={form.declared_form_type} detected={result['detected_form_type']}"
         form.filled_at = _now()
+        record_fill(db, form, None)
         db.commit()
         logger.info("fill_form_task type_mismatch form_id=%s", form_id)
         return
@@ -293,6 +301,7 @@ def _run_fill(task, db: Session, form_id: str) -> None:
     any_outstanding = _persist_form_fields(db, form, result["fields"])
     form.status = "in_review" if any_outstanding else "approved"
     form.filled_at = _now()
+    record_fill(db, form, result["fields"])
     db.commit()
     logger.info(
         "fill_form_task done form_id=%s status=%s schema_source=%s",
@@ -315,6 +324,7 @@ def _fail_form(form: Form, db: Session, reason: str) -> None:
     form.status = "failed"
     form.fill_error = reason
     form.filled_at = _now()
+    record_fill(db, form, None)
     db.commit()
     logger.warning("fill_form_task failed form_id=%s reason=%s", form.id, reason)
 
@@ -441,6 +451,7 @@ def _persist_form_fields(db: Session, form: Form, fields: list[dict]) -> bool:
                 verification_method=f["verification_method"],
                 needs_review=f["needs_review"],
                 review_reason=f["review_reason"],
+                mapping_tier=f.get("mapping_tier"),
                 reviewed=False,
                 review_action=None,
                 reviewed_at=None,

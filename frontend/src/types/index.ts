@@ -205,6 +205,9 @@ export interface HistoryItem {
   download_ready: boolean;
   created_at: string;
   filled_at: string | null;
+  // Phase 6: from pipeline_run. Null for a pre-Phase-6 form or a span not yet reached.
+  fill_latency_ms: number | null;
+  review_latency_ms: number | null;
 }
 
 export interface HistoryOut {
@@ -217,4 +220,36 @@ export interface DeleteProfileResponse {
   profile_fields_deleted: number;
   s3_objects_deleted: number;
   s3_delete_failures: number;
+}
+
+// --- Phase 6: metrics instrumentation -------------------------------------------------
+
+export interface MetricsOut {
+  forms_total: number;
+  forms_by_status: Record<string, number>;
+
+  avg_fill_latency_ms: number | null;
+  avg_review_latency_ms: number | null;
+  avg_ocr_latency_ms: number | null;
+
+  total_fields: number;
+  autofilled_fields: number;
+  autofill_rate: number | null;
+  high_confidence_rate: number | null;
+
+  inferred_forms_total: number;
+  schema_inference_success_rate: number | null;
+  mapping_tier_distribution: Record<string, number>;
+
+  verification_pass_rate: number | null;
+  accuracy_proxy: number | null;
+
+  // manual_seconds_per_field / estimated_* are an ESTIMATE, not a measurement — no
+  // in-app manual-fill baseline exists (SPEC-PHASE6.md Decision 5).
+  manual_seconds_per_field: number;
+  estimated_manual_seconds: number;
+  measured_review_seconds: number;
+  estimated_time_saved_seconds: number;
+
+  forms_per_profile: number;
 }

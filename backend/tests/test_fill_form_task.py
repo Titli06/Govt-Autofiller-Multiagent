@@ -23,6 +23,7 @@ from app.config import settings
 from app.core.encryption import build_aad, decrypt_field, encrypt_field
 from app.models.document import Document
 from app.models.form import Form, FormField
+from app.models.metrics import PipelineRun
 from app.models.profile import Profile, ProfileField
 from app.models.user import User
 from app.services.form_placement.document_ai import DetectedField, DocumentAIError
@@ -608,3 +609,113 @@ def test_template_field_placement_never_persisted_even_though_spec_has_one(
     assert form.schema_source == "template"
     rows = db_session.query(FormField).filter_by(form_id=form.id).all()
     assert all(r.placement is None for r in rows)
+
+
+# --- Phase 6: metrics instrumentation (SPEC-PHASE6.md §9) -----------------------------
+
+
+@patch("app.workers.tasks.classify_form", return_value="income_certificate")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_successful_fill_writes_pipeline_run_row(mock_get_doc, mock_preprocess, mock_classify, db_session):
+    user = _make_user(db_session)
+    _seed_profile_field(db_session, user, "full_name", "Ravi Kumar")
+    form = _make_form(db_session, user)
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    db_session.refresh(form)
+    run = db_session.query(PipelineRun).filter_by(form_id=form.id).one()
+    assert run.user_id == user.id
+    assert run.schema_source == "template"
+    assert run.terminal_status == form.status == "in_review"
+    assert run.fill_latency_ms is not None and run.fill_latency_ms >= 0
+    assert run.total_fields == 6
+    assert run.autofilled_fields == 1  # only applicant_name is filled and not flagged
+    assert run.review_latency_ms is None  # still in_review, review span not yet known
+
+
+@patch("app.workers.tasks.classify_form", return_value="scholarship_application")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_type_mismatch_writes_zero_count_pipeline_run_row(
+    mock_get_doc, mock_preprocess, mock_classify, db_session
+):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user, form_type="income_certificate")
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    run = db_session.query(PipelineRun).filter_by(form_id=form.id).one()
+    assert run.terminal_status == "type_mismatch"
+    assert run.total_fields == 0
+    assert run.autofilled_fields == 0
+
+
+@patch("app.workers.tasks.map_field_labels", return_value={})
+@patch("app.workers.tasks.detect_fields", return_value=[])
+@patch("app.workers.tasks.classify_form", return_value="unknown")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_failed_fill_writes_zero_count_pipeline_run_row(
+    mock_get_doc, mock_preprocess, mock_classify, mock_detect, mock_map, db_session
+):
+    user = _make_user(db_session)
+    form = _make_form(db_session, user, form_type="passport_renewal")
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    run = db_session.query(PipelineRun).filter_by(form_id=form.id).one()
+    assert run.terminal_status == "failed"
+    assert run.total_fields == 0
+
+
+@patch("app.workers.tasks.classify_form", return_value="income_certificate")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_rerun_upserts_pipeline_run_not_duplicates(mock_get_doc, mock_preprocess, mock_classify, db_session):
+    user = _make_user(db_session)
+    _seed_profile_field(db_session, user, "full_name", "Ravi Kumar")
+    form = _make_form(db_session, user)
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+    _run_fill(_FakeTask(), db_session, str(form.id))  # re-trigger
+
+    assert db_session.query(PipelineRun).filter_by(form_id=form.id).count() == 1
+
+
+@patch("app.workers.tasks.map_field_labels")
+@patch("app.workers.tasks.detect_fields")
+@patch("app.workers.tasks.classify_form", return_value="unknown")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_inferred_fill_persists_mapping_tier(
+    mock_get_doc, mock_preprocess, mock_classify, mock_detect, mock_map, db_session
+):
+    mock_detect.return_value = [
+        DetectedField(name="Father's Name", page=1, value_bbox=(0.1, 0.1, 0.6, 0.15), confidence=0.9),
+    ]
+    mock_map.return_value = {"Father's Name": {"profile_key": "father_name", "tier": "exact"}}
+
+    user = _make_user(db_session)
+    _seed_profile_field(db_session, user, "father_name", "Suresh Kumar")
+    form = _make_form(db_session, user, form_type="marriage_certificate")
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    field = db_session.query(FormField).filter_by(form_id=form.id, field_name="father_s_name").one()
+    assert field.mapping_tier == "exact"
+
+
+@patch("app.workers.tasks.classify_form", return_value="income_certificate")
+@patch("app.workers.tasks.preprocess", return_value=([b"page"], 1))
+@patch("app.workers.tasks.get_document", return_value=b"raw bytes")
+def test_template_fill_leaves_mapping_tier_null(mock_get_doc, mock_preprocess, mock_classify, db_session):
+    user = _make_user(db_session)
+    _seed_profile_field(db_session, user, "full_name", "Ravi Kumar")
+    form = _make_form(db_session, user)
+
+    _run_fill(_FakeTask(), db_session, str(form.id))
+
+    rows = db_session.query(FormField).filter_by(form_id=form.id).all()
+    assert all(r.mapping_tier is None for r in rows)

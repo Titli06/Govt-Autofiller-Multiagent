@@ -7,6 +7,7 @@ import { useAuth } from "./auth/AuthContext";
 import FormFill from "./pages/FormFill";
 import History from "./pages/History";
 import Login from "./pages/Login";
+import Metrics from "./pages/Metrics";
 import Profile from "./pages/Profile";
 import Register from "./pages/Register";
 import Review from "./pages/Review";
@@ -32,6 +33,7 @@ function AppShell({ children }: { children: JSX.Element }) {
         <Link to="/profile">Profile</Link>
         <Link to="/forms">Fill a form</Link>
         <Link to="/history">History</Link>
+        <Link to="/metrics">Metrics</Link>
         <span className="spacer" />
         <span style={{ fontSize: 13, color: "#666" }}>{user?.email}</span>
         <button className="link" onClick={() => void logout()}>
@@ -114,6 +116,16 @@ export default function App() {
           <ProtectedRoute>
             <AppShell>
               <History />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/metrics"
+        element={
+          <ProtectedRoute>
+            <AppShell>
+              <Metrics />
             </AppShell>
           </ProtectedRoute>
         }

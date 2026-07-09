@@ -34,6 +34,8 @@ function historyItem(overrides: Partial<HistoryItem> = {}): HistoryItem {
     download_ready: true,
     created_at: "2026-07-01T10:00:00Z",
     filled_at: "2026-07-01T10:00:05Z",
+    fill_latency_ms: 4200,
+    review_latency_ms: 1800,
     ...overrides,
   };
 }
@@ -208,6 +210,31 @@ describe("History page", () => {
     fireEvent.click(screen.getByRole("button", { name: /permanently delete everything/i }));
 
     await waitFor(() => expect(screen.getByText(/try again in a moment/i)).toBeDefined());
+  });
+
+  // --- Phase 6: per-form latency (SPEC-PHASE6.md §6.6) ---------------------------------
+
+  it("shows the fill and review latency for a form", async () => {
+    vi.mocked(api.getHistory).mockResolvedValue({
+      forms: [historyItem({ fill_latency_ms: 4200, review_latency_ms: 1800 })],
+    });
+
+    renderHistory();
+    await screen.findByText("Income Certificate");
+
+    expect(screen.getByTestId("latency-form-1").textContent).toMatch(/filled in 4\.2 s/i);
+    expect(screen.getByTestId("latency-form-1").textContent).toMatch(/reviewed in 1\.8 s/i);
+  });
+
+  it("tolerates a null latency for a pre-Phase-6 form", async () => {
+    vi.mocked(api.getHistory).mockResolvedValue({
+      forms: [historyItem({ fill_latency_ms: null, review_latency_ms: null })],
+    });
+
+    renderHistory();
+    await screen.findByText("Income Certificate");
+
+    expect(screen.getByTestId("latency-form-1").textContent).toMatch(/filled in —/i);
   });
 
   it("shows an error message when history fails to load", async () => {

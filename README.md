@@ -166,3 +166,44 @@ see repeated retry attempts with a `"...temporarily unavailable"` reason, that's
 transient network/quota issue rather than a credentials one. Uploading a form under
 **"Other / not listed"** and confirming it reaches the review page with at least one
 detected field (rather than immediately failing) is the practical end-to-end check.
+
+## Metrics
+
+The PRD's success metrics (§9) are computed live from the database, not assumed —
+`GET /api/metrics` (the **Metrics** page) reports **per-user** aggregates, and
+`GET /api/history` reports the same-shaped numbers **per form**:
+
+| Metric | What it means | Where it comes from |
+|---|---|---|
+| End-to-end latency | Upload → filled draft ready | `pipeline_run.fill_latency_ms`, per form on History, averaged on Metrics |
+| Review latency | Filled draft → fully approved | `pipeline_run.review_latency_ms`; `0` if a form auto-approved with nothing to review |
+| OCR-ingestion latency | Document upload → extracted | `documents.created_at`/`extracted_at`, averaged on Metrics only |
+| Auto-fill rate | Share of fields auto-filled (not routed to review) | `pipeline_run.autofilled_fields / total_fields` |
+| Schema-inference success rate | Inferred-schema uploads that reached a usable draft vs. failed | `pipeline_run.schema_source == "inferred"` runs |
+| Mapping-tier distribution | How confidently an inferred field's label was matched (`exact`/`strong`/`weak`/`none`) | `form_fields.mapping_tier` |
+| Verification pass rate | Share of filled fields that verified against their source document | `form_fields.verified` |
+| Accuracy (live proxy) | `approved-as-is / (approved-as-is + corrected)` during review — a correction signals the auto-fill was wrong | `pipeline_run.approved_as_is`/`corrected_fields` |
+| Time saved | **Estimated**, not measured — no in-app manual-fill baseline exists. `manual_seconds_per_field × field count` (config, default 45s) minus the actual measured review time | `MANUAL_SECONDS_PER_FIELD` env var |
+
+**Accuracy vs. ground truth** — the live proxy above is a real-time signal but isn't
+ground truth. `backend/scripts/eval_accuracy.py` runs the real fill pipeline (real
+Gemini + Document AI calls) against a small committed, synthetic fixture set
+(`backend/tests/fixtures/eval/`) and reports true precision/recall against hand-labeled
+expected values:
+
+```bash
+cd backend
+python scripts/eval_accuracy.py   # requires GEMINI_API_KEY / Document AI creds, like the live-stack checks above
+```
+
+This makes real, billed API calls, so it's **never run in CI or as part of `pytest`** —
+run it manually when you want to sanity-check that confidence actually correlates with
+correctness on a known-answer set.
+
+**Privacy:** the entire metrics path (both the live endpoints and the offline harness's
+scoring) reads only non-encrypted metadata — timestamps, counts, confidence bands,
+`mapping_tier`, `verified` — never a decrypted field value. Metrics are strictly
+scoped to the calling user; there's no cross-user or global aggregate. `pipeline_run`
+rows are deleted along with everything else by `DELETE /api/profile` (see
+[History and data deletion](#history-and-data-deletion) above) — metrics are user data,
+not an exempt audit trail.
